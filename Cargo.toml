@@ -1,0 +1,11 @@
+[package]
+name = "iot-image"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.4.0"
+image = "0.24.7"
+num-complex = "0.4.4"
+
+
