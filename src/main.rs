@@ -1,22 +1,69 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
+
+use image::{
+    codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding}, GrayImage, ImageResult,
+};
+// use plotters::prelude::*;
+// use plotters_bitmap::BitMapBackend;
 
 extern crate image;
 extern crate num_complex;
 
-#[get("/hello/{name}")]
-async fn greet(name: web::Path<String>) -> impl Responder {
-    format!("Hello {name}!")
-}
+// async fn plot(_name: web::Path<String>) -> impl Responder {
+//     const IMG_X: u32 = 640;
+//     const IMG_Y: u32 = 480;
+//     let mut buf: [u8; (IMG_X * IMG_Y) as usize] = [0; (IMG_X * IMG_Y) as usize];
 
-#[get("/pic/{name}")]
-async fn pic(_name: web::Path<String>) -> impl Responder {
-    let imgx = 800;
-    let imgy = 800;
+//     // XXXX just write to a file for now - it's simpler.
+
+//     let root = BitMapBackend::with_buffer(&mut buf, (IMG_X, IMG_Y)).into_drawing_area();
+
+//     let mut chart = ChartBuilder::on(&root)
+//         .x_label_area_size(35)
+//         .y_label_area_size(40)
+//         .margin(5)
+//         .caption("Histogram Test", ("sans-serif", 50.0))
+//         .build_cartesian_2d((0u32..10u32).into_segmented(), 0u32..10u32).unwrap();
+
+//     chart
+//         .configure_mesh()
+//         .disable_x_mesh()
+//         .bold_line_style(&WHITE.mix(0.3))
+//         .y_desc("Count")
+//         .x_desc("Bucket")
+//         .axis_desc_style(("sans-serif", 15))
+//         .draw().unwrap();
+
+//     let data = [
+//         0u32, 1, 1, 1, 4, 2, 5, 7, 8, 6, 4, 2, 1, 8, 3, 3, 3, 4, 4, 3, 3, 3,
+//     ];
+
+//     chart.draw_series(
+//         Histogram::vertical(&chart)
+//             .style(RED.mix(0.5).filled())
+//             .data(data.iter().map(|x: &u32| (*x, 1))),
+//     ).unwrap();
+
+//     // XXXX now load the file and send it.
+
+//     let mut v: Vec<u8> = Vec::new();
+//     imgbuf
+//         .write_to(&mut std::io::Cursor::new(&mut v), image::ImageFormat::Png)
+//         .unwrap();
+//     HttpResponse::Ok().content_type("image/png").body(v)
+// }
+
+fn pic() -> ImageResult<()> {
+    let imgx = 400;
+    let imgy = 300;
 
     let scalex = 3.0 / imgx as f32;
     let scaley = 3.0 / imgy as f32;
 
-    let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
+    let mut imgbuf = GrayImage::new(imgx, imgy);
     for x in 0..imgx {
         for y in 0..imgy {
             let cx = y as f32 * scalex - 1.5;
@@ -32,22 +79,23 @@ async fn pic(_name: web::Path<String>) -> impl Responder {
             }
 
             let pixel = imgbuf.get_pixel_mut(x, y);
-            let data = (*pixel as image::Rgb<u8>).0;
-            *pixel = image::Rgb([data[0], i as u8, data[2]]);
+            let v = if i > 32 { 0u8 } else { 255u8 };
+            *pixel = image::Luma([v]);
         }
     }
 
-    let mut v: Vec<u8> = Vec::new();
-    imgbuf
-        .write_to(&mut std::io::Cursor::new(&mut v), image::ImageFormat::Png)
-        .unwrap();
-    HttpResponse::Ok().content_type("image/png").body(v)
+    {
+        let f = File::create("test.pbm")?;
+        let mut writer = BufWriter::new(f);
+        let encoder =
+            PnmEncoder::new(&mut writer).with_subtype(PnmSubtype::Bitmap(SampleEncoding::Binary));
+        imgbuf.write_with_encoder(encoder)?;
+        writer.flush()?;
+    }
+
+    Ok(())
 }
 
-#[actix_web::main] // or #[tokio::main]
-async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| App::new().service(greet).service(pic))
-        .bind(("127.0.0.1", 8080))?
-        .run()
-        .await
+fn main() {
+    pic().unwrap();
 }
