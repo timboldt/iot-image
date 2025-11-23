@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <GxEPD2_7C.h>      // 7.3" color e-ink
+#include <PNGdec.h>         // PNG streaming decoder
 #include <Fonts/FreeMonoBold9pt7b.h>
 
 // Display object for reTerminal e1002 (7.3" color, GDEP073E01)
@@ -9,9 +10,11 @@ GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT> display(
   GxEPD2_730c_GDEP073E01(EPD_CS_PIN, EPD_DC_PIN, EPD_RES_PIN, EPD_BUSY_PIN)
 );
 
-// Image buffer for storing downloaded image
-uint8_t image_buffer[IMAGE_BUFFER_SIZE];
-size_t image_size = 0;
+// PNG decoder instance
+PNG png;
+
+// Stream buffer for PNG decoding
+uint8_t stream_buffer[STREAM_BUFFER_SIZE];
 
 // SPI instance for display
 SPIClass hspi(HSPI);
@@ -39,7 +42,7 @@ void setup() {
   display.setTextColor(GxEPD_BLACK);
   display.fillScreen(GxEPD_WHITE);
   
-  Serial1.println("[Display] Initialized (7.3\" color e-ink, 296x128)");
+  Serial1.printf("[Display] Initialized (7.3\" color e-ink, %dx%d)\n", EPD_WIDTH, EPD_HEIGHT);
   
   // Connect to WiFi
   setup_wifi();
@@ -96,106 +99,161 @@ void setup_wifi() {
 }
 
 /**
- * Download latest image from server
- * Server format: Binary device-specific image format
- * - Header: 4 bytes (magic number 0xDEADBEEF)
- * - Size: 4 bytes (image data size)
- * - Data: variable length image data
+ * PNG stream reader callback
+ * Called by PNGdec library to read chunks of data from HTTP stream
+ */
+WiFiClient* png_stream_ptr = nullptr;
+
+void* png_open(const char* filename, int32_t* size) {
+  // Return the stream pointer; size is unknown for streaming
+  *size = 0;
+  return png_stream_ptr;
+}
+
+void png_close(void* handle) {
+  // Nothing to do; HTTP client handles cleanup
+}
+
+int32_t png_read(PNGFILE* handle, uint8_t* buffer, int32_t length) {
+  if (!png_stream_ptr || !png_stream_ptr->connected()) {
+    return 0;
+  }
+
+  int32_t bytes_read = 0;
+  unsigned long timeout = millis() + 5000; // 5 second timeout
+
+  while (bytes_read < length && millis() < timeout) {
+    if (png_stream_ptr->available()) {
+      int chunk = png_stream_ptr->readBytes(buffer + bytes_read, length - bytes_read);
+      if (chunk > 0) {
+        bytes_read += chunk;
+      } else {
+        break;
+      }
+    } else {
+      delay(10);
+    }
+  }
+
+  return bytes_read;
+}
+
+int32_t png_seek(PNGFILE* handle, int32_t position) {
+  // Seeking not supported in streaming mode
+  return 0;
+}
+
+/**
+ * PNG draw callback
+ * Called by PNGdec for each decoded line of pixels
+ */
+void png_draw(PNGDRAW* pDraw) {
+  uint16_t* pixels = (uint16_t*)pDraw->pPixels;
+
+  // Draw the line of pixels to the display
+  for (int x = 0; x < pDraw->iWidth; x++) {
+    uint16_t color = pixels[x];
+
+    // Convert RGB565 to GxEPD2 colors
+    // This is a simple mapping; adjust based on your color palette
+    uint16_t color_mapped;
+    if (color == 0xFFFF) {
+      color_mapped = GxEPD_WHITE;
+    } else if (color == 0x0000) {
+      color_mapped = GxEPD_BLACK;
+    } else if ((color & 0xF800) > 0xC000) {
+      color_mapped = GxEPD_RED;  // Reddish colors
+    } else if ((color & 0x07E0) > 0x0600) {
+      color_mapped = GxEPD_GREEN; // Greenish colors
+    } else if ((color & 0x001F) > 0x0018) {
+      color_mapped = GxEPD_BLUE;  // Bluish colors
+    } else if ((color & 0xFFE0) > 0xC000) {
+      color_mapped = GxEPD_YELLOW; // Yellowish colors
+    } else {
+      color_mapped = GxEPD_BLACK; // Default to black
+    }
+
+    display.drawPixel(x, pDraw->y, color_mapped);
+  }
+}
+
+/**
+ * Download and render PNG image from server using streaming decoder
  */
 void download_image() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial1.println("[Download] WiFi not connected, skipping download");
     return;
   }
-  
+
   HTTPClient http;
   String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + IMAGE_ENDPOINT;
-  
+
   Serial1.printf("[Download] Fetching: %s\n", url.c_str());
-  
+
   http.begin(url);
-  http.setTimeout(10000); // 10 second timeout
-  
+  http.setTimeout(30000); // 30 second timeout for larger images
+
   int http_code = http.GET();
   Serial1.printf("[Download] HTTP response code: %d\n", http_code);
-  
+
   if (http_code == HTTP_CODE_OK) {
     int total_len = http.getSize();
     Serial1.printf("[Download] Content-Length: %d bytes\n", total_len);
-    
-    if (total_len > IMAGE_BUFFER_SIZE) {
-      Serial1.printf("[Download] ERROR: Image too large (%d > %d)\n", total_len, IMAGE_BUFFER_SIZE);
-      http.end();
-      return;
-    }
-    
-    // Read the entire response into buffer
-    WiFiClient* stream = http.getStreamPtr();
-    int bytes_read = 0;
-    
-    while (http.connected() && bytes_read < total_len) {
-      size_t available = stream->available();
-      if (available > 0) {
-        int to_read = min((size_t)available, (size_t)(total_len - bytes_read));
-        int read = stream->readBytes(&image_buffer[bytes_read], to_read);
-        bytes_read += read;
-        
-        if (bytes_read % 4096 == 0) {
-          Serial1.printf("[Download] Progress: %d / %d bytes\n", bytes_read, total_len);
-        }
+
+    // Get stream pointer for PNG decoder
+    png_stream_ptr = http.getStreamPtr();
+
+    // Open PNG and start decoding
+    int result = png.open(nullptr, png_open, png_close, png_read, png_seek, png_draw);
+
+    if (result == PNG_SUCCESS) {
+      Serial1.printf("[PNG] Image specs: %dx%d, %d bpp\n",
+                     png.getWidth(), png.getHeight(), png.getBpp());
+
+      // Prepare display for drawing
+      display.setFullWindow();
+      display.firstPage();
+
+      // Decode PNG (calls png_draw callback for each line)
+      unsigned long start_time = millis();
+      result = png.decode(nullptr, 0);
+      unsigned long decode_time = millis() - start_time;
+
+      if (result == PNG_SUCCESS) {
+        Serial1.printf("[PNG] Decode successful (%lu ms)\n", decode_time);
+      } else {
+        Serial1.printf("[PNG] Decode failed with error: %d\n", result);
       }
+
+      png.close();
+    } else {
+      Serial1.printf("[PNG] Failed to open PNG: %d\n", result);
     }
-    
-    image_size = bytes_read;
-    Serial1.printf("[Download] Complete: %d bytes received\n", image_size);
-    
-    // Validate image format
-    if (image_size >= 8) {
-      uint32_t magic = *(uint32_t*)&image_buffer[0];
-      uint32_t data_size = *(uint32_t*)&image_buffer[4];
-      Serial1.printf("[Download] Magic: 0x%08X, Data size: %d\n", magic, data_size);
-      
-      if (magic != 0xDEADBEEF) {
-        Serial1.println("[Download] WARNING: Invalid magic number in image header");
-      }
-    }
+
+    png_stream_ptr = nullptr;
   } else {
     Serial1.printf("[Download] Failed to download: %s\n", http.errorToString(http_code).c_str());
   }
-  
+
   http.end();
 }
 
 /**
  * Render image on e-ink display
- * 
- * The device-specific image format in the buffer is sent directly to the display driver.
- * This assumes the server generates images optimized for the reTerminal e1002 (GxEPD2_730c format).
+ *
+ * Image is already rendered during PNG decoding via png_draw callback.
+ * This function just triggers the display refresh.
  */
 void render_image() {
-  if (image_size == 0) {
-    Serial1.println("[Render] No image data to render");
-    return;
-  }
-  
-  Serial1.printf("[Render] Rendering %d bytes to display\n", image_size);
-  
-  // TODO: Parse device-specific format and call display.drawPixel() for each pixel
-  // For now, demonstrate display capability with a simple pattern
-  
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setCursor(10, 30);
-    display.setFont(&FreeMonoBold9pt7b);
-    display.println("Weather Image");
-    display.println("Downloaded");
-  } while (display.nextPage());
-  
+  Serial1.println("[Render] Refreshing display...");
+
+  // Complete the display update
+  display.nextPage();
+
   Serial1.println("[Render] Display refresh initiated");
-  // E-ink display refresh takes 1-3 seconds
-  delay(3000);
+  // E-ink display refresh takes several seconds
+  delay(5000);
   Serial1.println("[Render] Display refresh complete");
 }
 

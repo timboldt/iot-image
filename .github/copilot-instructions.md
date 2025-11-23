@@ -125,7 +125,7 @@ opt-level = "z"         # Optimize for size
 ### Hardware Target
 - **Device:** Seed Studio reTerminal e1002
 - **Processor:** ESP32-S3 (32-bit Xtensa dual-core, 240 MHz)
-- **Display:** 7.3" e-ink (296 × 128 pixels), 3-color support
+- **Display:** The reTerminal E1002 features a 7.3-inch full-color e-paper display with an 800x480 pixel resolution and a color depth of 6 colors (plus black and white). 
 - **Connectivity:** WiFi (2.4 GHz 802.11 b/g/n)
 
 ### Code Structure (`client/`)

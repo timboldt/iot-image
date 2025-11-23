@@ -14,7 +14,10 @@
 #define UPDATE_INTERVAL_SEC 900
 
 // === ePaper Display Pins (reTerminal e1002) ===
-// Using GxEPD2 with GxEPD2_730c_GDEP073E01 driver (7.3" color)
+// Using GxEPD2 with GxEPD2_730c_GDEP073E01 driver
+// 7.3" full-color e-paper: 800x480 pixels, 8 colors (black, white + 6 colors)
+#define EPD_WIDTH     800
+#define EPD_HEIGHT    480
 #define EPD_SCK_PIN   7
 #define EPD_MOSI_PIN  9
 #define EPD_CS_PIN    10
@@ -50,6 +53,6 @@
 #define BUTTON_KEY1 4       // Middle button
 #define BUTTON_KEY2 5       // Left button
 
-// Image buffer size
-// Device-specific format for 296x128 display: ~38KB
-#define IMAGE_BUFFER_SIZE 40960
+// PNG streaming buffer size
+// Used for downloading chunks and decoding on-the-fly
+#define STREAM_BUFFER_SIZE 8192  // 8KB chunks for efficient streaming
