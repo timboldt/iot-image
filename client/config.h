@@ -1,12 +1,14 @@
 // Configuration for iot-image client
 // WiFi and server settings for reTerminal e1002
 
-// WiFi credentials
-#define WIFI_SSID "your_ssid"
-#define WIFI_PASSWORD "your_password"
+#include "arduino_secrets.h"
+
+// WiFi credentials (from arduino_secrets.h)
+#define WIFI_SSID SECRET_SSID
+#define WIFI_PASSWORD SECRET_PASS
 
 // Server configuration
-#define SERVER_HOST "raspberrypi.local"
+#define SERVER_HOST "pidev.local"
 #define SERVER_PORT 8080
 #define IMAGE_ENDPOINT "/image/latest"
 
