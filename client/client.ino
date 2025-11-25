@@ -13,8 +13,10 @@ GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT> display(
 // PNG decoder instance
 PNG png;
 
-// Stream buffer for PNG decoding
-uint8_t stream_buffer[STREAM_BUFFER_SIZE];
+// Buffer for downloaded PNG data
+uint8_t* png_buffer = nullptr;
+int png_buffer_size = 0;
+int png_buffer_pos = 0;
 
 // SPI instance for display
 SPIClass hspi(HSPI);
@@ -111,47 +113,41 @@ void setup_wifi() {
 }
 
 /**
- * PNG stream reader callback
- * Called by PNGdec library to read chunks of data from HTTP stream
+ * PNG memory reader callbacks
+ * Called by PNGdec library to read chunks from memory buffer
  */
-WiFiClient* png_stream_ptr = nullptr;
-
 void* png_open(const char* filename, int32_t* size) {
-  // Return the stream pointer; size is unknown for streaming
-  *size = 0;
-  return png_stream_ptr;
+  *size = png_buffer_size;
+  png_buffer_pos = 0;  // Reset position
+  return png_buffer;
 }
 
 void png_close(void* handle) {
-  // Nothing to do; HTTP client handles cleanup
+  // Nothing to do; we'll free the buffer elsewhere
 }
 
 int32_t png_read(PNGFILE* handle, uint8_t* buffer, int32_t length) {
-  if (!png_stream_ptr || !png_stream_ptr->connected()) {
+  int32_t bytes_to_read = length;
+
+  if (png_buffer_pos + length > png_buffer_size) {
+    bytes_to_read = png_buffer_size - png_buffer_pos;
+  }
+
+  if (bytes_to_read <= 0) {
     return 0;
   }
 
-  int32_t bytes_read = 0;
-  unsigned long timeout = millis() + 5000; // 5 second timeout
+  memcpy(buffer, png_buffer + png_buffer_pos, bytes_to_read);
+  png_buffer_pos += bytes_to_read;
 
-  while (bytes_read < length && millis() < timeout) {
-    if (png_stream_ptr->available()) {
-      int chunk = png_stream_ptr->readBytes(buffer + bytes_read, length - bytes_read);
-      if (chunk > 0) {
-        bytes_read += chunk;
-      } else {
-        break;
-      }
-    } else {
-      delay(10);
-    }
-  }
-
-  return bytes_read;
+  return bytes_to_read;
 }
 
 int32_t png_seek(PNGFILE* handle, int32_t position) {
-  // Seeking not supported in streaming mode
+  if (position >= 0 && position < png_buffer_size) {
+    png_buffer_pos = position;
+    return position;
+  }
   return 0;
 }
 
@@ -193,7 +189,7 @@ int png_draw(PNGDRAW* pDraw) {
 }
 
 /**
- * Download and render PNG image from server using streaming decoder
+ * Download PNG image from server into memory, then decode
  */
 void download_image() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -202,7 +198,8 @@ void download_image() {
   }
 
   HTTPClient http;
-  String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + IMAGE_ENDPOINT;
+  // String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + IMAGE_ENDPOINT;
+  String url = String("http://httpbin.org/image/png");
 
   Serial.printf("[Download] Fetching: %s\n", url.c_str());
 
@@ -216,10 +213,56 @@ void download_image() {
     int total_len = http.getSize();
     Serial.printf("[Download] Content-Length: %d bytes\n", total_len);
 
-    // Get stream pointer for PNG decoder
-    png_stream_ptr = http.getStreamPtr();
+    // Allocate buffer for entire PNG
+    if (png_buffer != nullptr) {
+      free(png_buffer);
+      png_buffer = nullptr;
+    }
 
-    // Open PNG and start decoding
+    png_buffer = (uint8_t*)malloc(total_len);
+    if (png_buffer == nullptr) {
+      Serial.println("[Download] Failed to allocate memory for PNG");
+      http.end();
+      return;
+    }
+
+    png_buffer_size = total_len;
+
+    // Download entire PNG into buffer
+    WiFiClient* stream = http.getStreamPtr();
+    int bytes_read = 0;
+    unsigned long start_time = millis();
+
+    Serial.print("[Download] Downloading: ");
+    while (http.connected() && bytes_read < total_len) {
+      size_t available = stream->available();
+      if (available) {
+        int chunk = stream->readBytes(png_buffer + bytes_read,
+                                      min((int)available, total_len - bytes_read));
+        bytes_read += chunk;
+
+        // Progress indicator every 10%
+        if (bytes_read % (total_len / 10) == 0) {
+          Serial.print(".");
+        }
+      } else {
+        delay(10);
+      }
+
+      // Timeout check (30 seconds)
+      if (millis() - start_time > 30000) {
+        Serial.println("\n[Download] Timeout!");
+        free(png_buffer);
+        png_buffer = nullptr;
+        http.end();
+        return;
+      }
+    }
+
+    Serial.printf("\n[Download] Downloaded %d bytes in %lu ms\n",
+                  bytes_read, millis() - start_time);
+
+    // Now decode the PNG from memory
     int result = png.open(nullptr, png_open, png_close, png_read, png_seek, png_draw);
 
     if (result == PNG_SUCCESS) {
@@ -231,7 +274,7 @@ void download_image() {
       display.firstPage();
 
       // Decode PNG (calls png_draw callback for each line)
-      unsigned long start_time = millis();
+      start_time = millis();
       result = png.decode(nullptr, 0);
       unsigned long decode_time = millis() - start_time;
 
@@ -246,7 +289,9 @@ void download_image() {
       Serial.printf("[PNG] Failed to open PNG: %d\n", result);
     }
 
-    png_stream_ptr = nullptr;
+    // Free the buffer
+    free(png_buffer);
+    png_buffer = nullptr;
   } else {
     Serial.printf("[Download] Failed to download: %s\n", http.errorToString(http_code).c_str());
   }
