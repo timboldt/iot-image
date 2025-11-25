@@ -59,8 +59,9 @@ arduino-cli core install esp32:esp32
 **Build and upload to device:**
 ```bash
 cd client
-arduino-cli compile --fqbn esp32:esp32:esp32s3 .
-arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32s3 .
+arduino-cli compile --verbose --fqbn esp32:esp32:esp32s3 .
+arduino-cli upload --verbose --fqbn esp32:esp32:esp32s3 --port /dev/cu.wchusbserial110
+arduino-cli monitor -p /dev/cu.wchusbserial110 -c baudrate=115200
 ```
 
 **Monitor serial output:**
