@@ -10,7 +10,7 @@
 // Server configuration
 #define SERVER_HOST "pidev.local"
 #define SERVER_PORT 8080
-#define IMAGE_ENDPOINT "/image/latest"
+#define IMAGE_ENDPOINT "test.png"
 
 // Update interval in seconds (6 hours = 21600 seconds)
 #define UPDATE_INTERVAL_SEC 21600
