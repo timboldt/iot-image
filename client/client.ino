@@ -157,29 +157,55 @@ int32_t png_seek(PNGFILE* handle, int32_t position) {
  * Returns 1 to continue decoding, 0 to stop
  */
 int png_draw(PNGDRAW* pDraw) {
+  // pDraw->pPixels contains RGB565 pixel data (array of uint16_t)
+  // pDraw->iWidth is the width of this line segment
+  // pDraw->y is the current line number
+
   uint16_t* pixels = (uint16_t*)pDraw->pPixels;
 
   // Draw the line of pixels to the display
   for (int x = 0; x < pDraw->iWidth; x++) {
     uint16_t color = pixels[x];
 
-    // Convert RGB565 to GxEPD2 colors
-    // This is a simple mapping; adjust based on your color palette
+    // Extract RGB components from RGB565
+    // RGB565 format: RRRRR GGGGGG BBBBB
+    uint8_t r = (color >> 11) & 0x1F;  // 5 bits red
+    uint8_t g = (color >> 5) & 0x3F;   // 6 bits green
+    uint8_t b = color & 0x1F;          // 5 bits blue
+
+    // Convert to 8-bit values for easier comparison
+    r = (r << 3) | (r >> 2);  // Scale 5-bit to 8-bit
+    g = (g << 2) | (g >> 4);  // Scale 6-bit to 8-bit
+    b = (b << 3) | (b >> 2);  // Scale 5-bit to 8-bit
+
+    // Map RGB to e-ink display colors
     uint16_t color_mapped;
-    if (color == 0xFFFF) {
+
+    if (r > 240 && g > 240 && b > 240) {
+      // Nearly white
       color_mapped = GxEPD_WHITE;
-    } else if (color == 0x0000) {
+    } else if (r < 15 && g < 15 && b < 15) {
+      // Nearly black
       color_mapped = GxEPD_BLACK;
-    } else if ((color & 0xF800) > 0xC000) {
-      color_mapped = GxEPD_RED;  // Reddish colors
-    } else if ((color & 0x07E0) > 0x0600) {
-      color_mapped = GxEPD_GREEN; // Greenish colors
-    } else if ((color & 0x001F) > 0x0018) {
-      color_mapped = GxEPD_BLUE;  // Bluish colors
-    } else if ((color & 0xFFE0) > 0xC000) {
-      color_mapped = GxEPD_YELLOW; // Yellowish colors
+    } else if (r > 200 && g < 100 && b < 100) {
+      // Red dominant
+      color_mapped = GxEPD_RED;
+    } else if (r < 100 && g > 200 && b < 100) {
+      // Green dominant
+      color_mapped = GxEPD_GREEN;
+    } else if (r < 100 && g < 100 && b > 200) {
+      // Blue dominant
+      color_mapped = GxEPD_BLUE;
+    } else if (r > 200 && g > 200 && b < 100) {
+      // Yellow (red + green)
+      color_mapped = GxEPD_YELLOW;
+    } else if (r > 200 && g > 100 && b < 100) {
+      // Orange (red + some green)
+      color_mapped = GxEPD_ORANGE;
     } else {
-      color_mapped = GxEPD_BLACK; // Default to black
+      // Default based on brightness
+      int brightness = (r + g + b) / 3;
+      color_mapped = (brightness > 128) ? GxEPD_WHITE : GxEPD_BLACK;
     }
 
     display.drawPixel(x, pDraw->y, color_mapped);

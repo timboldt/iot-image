@@ -12,8 +12,8 @@
 #define SERVER_PORT 8080
 #define IMAGE_ENDPOINT "/image/latest"
 
-// Update interval in seconds (15 minutes = 900 seconds)
-#define UPDATE_INTERVAL_SEC 900
+// Update interval in seconds (6 hours = 21600 seconds)
+#define UPDATE_INTERVAL_SEC 21600
 
 // === ePaper Display Pins (reTerminal e1002) ===
 // Using GxEPD2 with GxEPD2_730c_GDEP073E01 driver
