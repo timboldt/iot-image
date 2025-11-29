@@ -13,7 +13,6 @@ pub enum EpdColor {
     Blue = 3,
     Red = 4,
     Yellow = 5,
-    Orange = 6,
 }
 
 /// Raw bitmap buffer for e-ink display
@@ -67,8 +66,8 @@ impl EpdBitmap {
 pub fn generate_test_bitmap(width: u16, height: u16) -> EpdBitmap {
     let mut bitmap = EpdBitmap::new(width, height);
 
-    // Color bars - each 1/7th of the width
-    let bar_width = width / 7;
+    // Color bars - each 1/6th of the width
+    let bar_width = width / 6;
     let colors = [
         EpdColor::Black,
         EpdColor::White,
@@ -76,7 +75,6 @@ pub fn generate_test_bitmap(width: u16, height: u16) -> EpdBitmap {
         EpdColor::Blue,
         EpdColor::Red,
         EpdColor::Yellow,
-        EpdColor::Orange,
     ];
 
     // Draw horizontal color bars in top half
