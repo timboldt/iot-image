@@ -75,15 +75,14 @@ The server generates raw bitmaps in the native EPBM format for maximum efficienc
 - **Pixel Data:** 1 byte per pixel, representing the color value directly
 - **Dimensions:** 800 × 480 pixels
 - **File Size:** 384,008 bytes (8 header + 384,000 pixel data)
-- **Colors:** 7 colors mapped to GxEPD2 palette
+- **Colors:** 6 colors mapped to GxEPD2 palette
   - 0 = Black
   - 1 = White
   - 2 = Green
   - 3 = Blue
   - 4 = Red
   - 5 = Yellow
-  - 6 = Orange
-
+  
 ### Why Raw Bitmap?
 - **Zero decoding overhead:** No PNG/JPEG decompression required
 - **Direct rendering:** Color values map 1:1 to display commands
