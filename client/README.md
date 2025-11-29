@@ -44,14 +44,10 @@ arduino-cli core install esp32:esp32
 ```bash
 # GxEPD2 - E-ink display driver
 arduino-cli lib install "GxEPD2"
-
-# PNGdec - Streaming PNG decoder (lightweight, no external dependencies)
-arduino-cli lib install "PNGdec"
 ```
 
 **Library Details:**
-- **GxEPD2**: Supports various e-ink displays including GDEP073E01
-- **PNGdec** by Larry Bank: Memory-efficient PNG decoder that streams data without requiring the entire image in RAM. Perfect for embedded systems with limited memory.
+- **GxEPD2**: Supports various e-ink displays including GDEP073E01 (7.3" 7-color e-paper)
 
 ### 5. Build & Upload
 
@@ -69,20 +65,31 @@ arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 
 ## Image Format
 
-The server generates PNG images that are streamed and decoded on-the-fly by the client:
+The server generates raw bitmaps in the native EPBM format for maximum efficiency:
 
-### PNG Streaming
-- **Format:** Standard PNG (8-bit indexed or 24-bit RGB)
+### EPBM (E-Paper BitMap) Format
+- **Header:** 8 bytes
+  - Magic number: "EPBM" (4 bytes)
+  - Width: 16-bit big-endian (2 bytes)
+  - Height: 16-bit big-endian (2 bytes)
+- **Pixel Data:** 1 byte per pixel, representing the color value directly
 - **Dimensions:** 800 × 480 pixels
-- **Colors:** 8 colors (black, white, red, green, blue, yellow, and variations)
-- **Typical Size:** 50-150 KB (depending on image complexity)
-- **Decoding:** Streaming decoder processes the image line-by-line without loading the entire image into RAM
+- **File Size:** 384,008 bytes (8 header + 384,000 pixel data)
+- **Colors:** 7 colors mapped to GxEPD2 palette
+  - 0 = Black
+  - 1 = White
+  - 2 = Green
+  - 3 = Blue
+  - 4 = Red
+  - 5 = Yellow
+  - 6 = Orange
 
-### Why PNG?
-- **Memory efficient:** Decodes on-the-fly with only ~8KB RAM buffer
-- **Standard format:** Easy to generate server-side with any image library
-- **Lossless:** Perfect for weather icons, text, and graphics
-- **No large buffers needed:** 800×480 raw image would be ~384KB, but streaming PNG only needs ~8KB working memory
+### Why Raw Bitmap?
+- **Zero decoding overhead:** No PNG/JPEG decompression required
+- **Direct rendering:** Color values map 1:1 to display commands
+- **Predictable performance:** Fixed transfer and render time
+- **Simple implementation:** No external decoder libraries needed
+- **Optimal for e-ink:** Format designed specifically for the display's color palette
 
 ## Code Structure
 
@@ -98,22 +105,25 @@ Configuration constants:
 Main sketch with functions:
 - `setup()` - Initialize and run main loop
 - `setup_wifi()` - Connect to WiFi with retries
-- `download_image()` - Stream and decode PNG from server
-- `png_draw()` - Callback to render each decoded line to display
-- `png_read()`, `png_open()`, `png_close()`, `png_seek()` - PNG decoder callbacks
-- `render_image()` - Trigger final display refresh
+- `download_image()` - Download raw bitmap from server
+- `parse_bitmap_header()` - Validate EPBM header and extract dimensions
+- `map_epbm_color()` - Convert EPBM color values to GxEPD2 constants
+- `render_image()` - Render bitmap to display and trigger refresh
 - `deep_sleep()` - Sleep until next update
 
 ## Update Cycle
 
 1. **Connect to WiFi** (5-10 seconds)
-2. **Stream and decode PNG** from server (10-30 seconds depending on image size and WiFi speed)
-   - Downloads in chunks, decodes line-by-line
-   - Draws directly to display buffer during decoding
-3. **Display refresh** (5-10 seconds for full e-ink refresh)
-4. **Deep sleep** until next update (default: 15 minutes)
+2. **Download raw bitmap** from server (~5-10 seconds for 384KB over WiFi)
+   - Downloads entire bitmap into RAM
+   - Validates EPBM header
+3. **Render to display** (~20-30 seconds to draw 384,000 pixels)
+   - Reads pixel data and maps colors directly
+   - No decoding required
+4. **Display refresh** (5-10 seconds for full e-ink refresh)
+5. **Deep sleep** until next update (default: 6 hours)
 
-Total active time: ~30-60 seconds, then sleep
+Total active time: ~40-60 seconds, then sleep
 
 ## Power Optimization
 
@@ -129,25 +139,27 @@ Serial output provides detailed status:
 [WiFi] Connecting to WiFi...
 [WiFi] Connected!
 [WiFi] IP address: 192.168.1.100
-[Download] Fetching: http://raspberrypi.local:8080/image/latest
+[Download] Fetching: http://pidev.local:8080/weather/seed-e1002.bin
 [Download] HTTP response code: 200
-[Download] Content-Length: 85420 bytes
-[PNG] Image specs: 800x480, 24 bpp
-[PNG] Decode successful (2340 ms)
-[Render] Refreshing display...
+[Download] Content-Length: 384008 bytes
+[Download] Bitmap download complete
+[Bitmap] Header: 800x480
+[Render] Rendering bitmap to display...
+[Render] Rendered 384000 pixels in 25340 ms
 [Render] Display refresh complete
-[Sleep] Sleeping for 900 seconds
+[Sleep] Sleeping for 21600 seconds
 ```
 
 ## TODO
 
-- [x] Integrate PNG streaming decoder
+- [x] Replace PNG format with native EPBM bitmap format
 - [x] Update display dimensions to 800x480
-- [ ] Fine-tune color mapping from RGB to e-ink palette
+- [x] Direct color mapping using GxEPD2 palette
 - [ ] Add fallback image cache (SPIFFS)
 - [ ] Implement WiFi reconnection on failure
 - [ ] Add battery monitoring (if supported by reTerminal)
 - [ ] OTA firmware updates
+- [ ] Optimize pixel rendering (use writeImage or buffer)
 
 ## Troubleshooting
 
@@ -157,12 +169,12 @@ Serial output provides detailed status:
 - Check WiFi signal strength with serial monitor
 
 **Image not rendering?**
-- Verify server is running and accessible at SERVER_HOST:SERVER_PORT
-- Check HTTP endpoint matches `/image/latest`
-- Ensure server is returning PNG format (not another format)
-- Verify PNG dimensions are 800×480
+- Verify server is running with `--serve` flag
+- Check server is accessible at SERVER_HOST:SERVER_PORT
+- Ensure server is returning EPBM format (384,008 bytes)
+- Verify bitmap dimensions are 800×480
 - Check display driver is properly initialized
-- Monitor serial output for PNG decode errors
+- Monitor serial output for bitmap header validation errors
 
 **Serial output shows gibberish?**
 - Ensure baud rate is 115200

@@ -8,9 +8,10 @@
 #define WIFI_PASSWORD SECRET_PASS
 
 // Server configuration
-#define SERVER_HOST "pidev.local"
+// #define SERVER_HOST "pidev.local"
+#define SERVER_HOST "tims.macbook.black.lan"
 #define SERVER_PORT 8080
-#define IMAGE_ENDPOINT "test.png"
+#define IMAGE_ENDPOINT "weather/seed-e1002.bin"
 
 // Update interval in seconds (6 hours = 21600 seconds)
 #define UPDATE_INTERVAL_SEC 21600

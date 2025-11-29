@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <GxEPD2_7C.h>      // 7.3" color e-ink
-#include <PNGdec.h>         // PNG streaming decoder
 #include <Fonts/FreeMonoBold9pt7b.h>
 
 // Display object for reTerminal e1002 (7.3" color, GDEP073E01)
@@ -10,13 +9,9 @@ GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT> display(
   GxEPD2_730c_GDEP073E01(EPD_CS_PIN, EPD_DC_PIN, EPD_RES_PIN, EPD_BUSY_PIN)
 );
 
-// PNG decoder instance
-PNG png;
-
-// Buffer for downloaded PNG data (allocated dynamically)
-uint8_t* png_buffer = nullptr;
-int png_buffer_size = 0;
-int png_buffer_pos = 0;
+// Buffer for downloaded bitmap data (allocated dynamically)
+uint8_t* bitmap_buffer = nullptr;
+int bitmap_buffer_size = 0;
 
 // SPI instance for display
 SPIClass hspi(HSPI);
@@ -113,112 +108,57 @@ void setup_wifi() {
 }
 
 /**
- * PNG memory reader callbacks
- * PNGdec requires the entire file in memory to support seeking
+ * Parse EPBM bitmap header and validate
+ * Returns true if valid, false otherwise
  */
-void* png_open(const char* filename, int32_t* size) {
-  *size = png_buffer_size;
-  png_buffer_pos = 0;
-  return png_buffer;
-}
-
-void png_close(void* handle) {
-  // Buffer will be freed in download_image()
-}
-
-int32_t png_read(PNGFILE* handle, uint8_t* buffer, int32_t length) {
-  int32_t bytes_to_read = length;
-
-  // Don't read past end of buffer
-  if (png_buffer_pos + length > png_buffer_size) {
-    bytes_to_read = png_buffer_size - png_buffer_pos;
+bool parse_bitmap_header(uint16_t* width, uint16_t* height) {
+  if (bitmap_buffer_size < 8) {
+    Serial.println("[Bitmap] Buffer too small for header");
+    return false;
   }
 
-  if (bytes_to_read <= 0) {
-    return 0;
+  // Check magic number "EPBM"
+  if (memcmp(bitmap_buffer, "EPBM", 4) != 0) {
+    Serial.println("[Bitmap] Invalid magic number");
+    return false;
   }
 
-  memcpy(buffer, png_buffer + png_buffer_pos, bytes_to_read);
-  png_buffer_pos += bytes_to_read;
+  // Read width (big-endian)
+  *width = (bitmap_buffer[4] << 8) | bitmap_buffer[5];
 
-  return bytes_to_read;
-}
+  // Read height (big-endian)
+  *height = (bitmap_buffer[6] << 8) | bitmap_buffer[7];
 
-int32_t png_seek(PNGFILE* handle, int32_t position) {
-  // Seek to position in buffer
-  if (position >= 0 && position < png_buffer_size) {
-    png_buffer_pos = position;
-    return position;
+  Serial.printf("[Bitmap] Header: %dx%d\n", *width, *height);
+
+  // Validate dimensions
+  if (*width != EPD_WIDTH || *height != EPD_HEIGHT) {
+    Serial.printf("[Bitmap] Dimension mismatch: expected %dx%d\n", EPD_WIDTH, EPD_HEIGHT);
+    return false;
   }
-  return 0;
+
+  return true;
 }
 
 /**
- * PNG draw callback
- * Called by PNGdec for each decoded line of pixels
- * Returns 1 to continue decoding, 0 to stop
+ * Map EPBM color value to GxEPD color constant
  */
-int png_draw(PNGDRAW* pDraw) {
-  // pDraw->pPixels contains RGB565 pixel data (array of uint16_t)
-  // pDraw->iWidth is the width of this line segment
-  // pDraw->y is the current line number
-
-  uint16_t* pixels = (uint16_t*)pDraw->pPixels;
-
-  // Draw the line of pixels to the display
-  for (int x = 0; x < pDraw->iWidth; x++) {
-    uint16_t color = pixels[x];
-
-    // Extract RGB components from RGB565
-    // RGB565 format: RRRRR GGGGGG BBBBB
-    uint8_t r = (color >> 11) & 0x1F;  // 5 bits red
-    uint8_t g = (color >> 5) & 0x3F;   // 6 bits green
-    uint8_t b = color & 0x1F;          // 5 bits blue
-
-    // Convert to 8-bit values for easier comparison
-    r = (r << 3) | (r >> 2);  // Scale 5-bit to 8-bit
-    g = (g << 2) | (g >> 4);  // Scale 6-bit to 8-bit
-    b = (b << 3) | (b >> 2);  // Scale 5-bit to 8-bit
-
-    // Map RGB to e-ink display colors
-    uint16_t color_mapped;
-
-    if (r > 240 && g > 240 && b > 240) {
-      // Nearly white
-      color_mapped = GxEPD_WHITE;
-    } else if (r < 15 && g < 15 && b < 15) {
-      // Nearly black
-      color_mapped = GxEPD_BLACK;
-    } else if (r > 200 && g < 100 && b < 100) {
-      // Red dominant
-      color_mapped = GxEPD_RED;
-    } else if (r < 100 && g > 200 && b < 100) {
-      // Green dominant
-      color_mapped = GxEPD_GREEN;
-    } else if (r < 100 && g < 100 && b > 200) {
-      // Blue dominant
-      color_mapped = GxEPD_BLUE;
-    } else if (r > 200 && g > 200 && b < 100) {
-      // Yellow (red + green)
-      color_mapped = GxEPD_YELLOW;
-    } else if (r > 200 && g > 100 && b < 100) {
-      // Orange (red + some green)
-      color_mapped = GxEPD_ORANGE;
-    } else {
-      // Default based on brightness
-      int brightness = (r + g + b) / 3;
-      color_mapped = (brightness > 128) ? GxEPD_WHITE : GxEPD_BLACK;
-    }
-
-    display.drawPixel(x, pDraw->y, color_mapped);
+uint16_t map_epbm_color(uint8_t color) {
+  switch (color) {
+    case 0:  return GxEPD_BLACK;
+    case 1:  return GxEPD_WHITE;
+    case 2:  return GxEPD_GREEN;
+    case 3:  return GxEPD_BLUE;
+    case 4:  return GxEPD_RED;
+    case 5:  return GxEPD_YELLOW;
+    case 6:  return GxEPD_ORANGE;
+    default: return GxEPD_WHITE;  // Default to white for unknown colors
   }
-
-  return 1; // Continue decoding
 }
 
 /**
- * Download PNG image from server into memory, then decode
- * Note: PNGdec requires seeking, so we must load entire file into RAM
+ * Download raw bitmap image from server
+ * Format: EPBM header (8 bytes) + pixel data (1 byte per pixel)
  */
 void download_image() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -246,31 +186,32 @@ void download_image() {
   int total_len = http.getSize();
   Serial.printf("[Download] Content-Length: %d bytes\n", total_len);
 
-  // Check if we have enough memory before allocating
-  if (total_len <= 0 || total_len > 200000) {
-    Serial.printf("[Download] Invalid size: %d bytes\n", total_len);
+  // Expected size: 8 bytes header + 800*480 bytes data = 384008 bytes
+  int expected_size = 8 + (EPD_WIDTH * EPD_HEIGHT);
+  if (total_len != expected_size) {
+    Serial.printf("[Download] Size mismatch: expected %d bytes\n", expected_size);
     http.end();
     return;
   }
 
   // Free old buffer if it exists
-  if (png_buffer != nullptr) {
-    free(png_buffer);
-    png_buffer = nullptr;
+  if (bitmap_buffer != nullptr) {
+    free(bitmap_buffer);
+    bitmap_buffer = nullptr;
   }
 
-  // Allocate buffer for entire PNG
-  png_buffer = (uint8_t*)malloc(total_len);
-  if (png_buffer == nullptr) {
+  // Allocate buffer for entire bitmap
+  bitmap_buffer = (uint8_t*)malloc(total_len);
+  if (bitmap_buffer == nullptr) {
     Serial.printf("[Download] malloc(%d) failed - out of memory\n", total_len);
     http.end();
     return;
   }
 
-  png_buffer_size = total_len;
+  bitmap_buffer_size = total_len;
   Serial.printf("[Download] Allocated %d bytes\n", total_len);
 
-  // Download entire PNG into buffer
+  // Download entire bitmap into buffer
   WiFiClient* stream = http.getStreamPtr();
   int bytes_read = 0;
   unsigned long start_time = millis();
@@ -280,7 +221,7 @@ void download_image() {
     size_t available = stream->available();
     if (available) {
       int to_read = min((int)available, total_len - bytes_read);
-      int chunk = stream->readBytes(png_buffer + bytes_read, to_read);
+      int chunk = stream->readBytes(bitmap_buffer + bytes_read, to_read);
       bytes_read += chunk;
 
       // Progress dots every 10%
@@ -297,8 +238,8 @@ void download_image() {
     // Timeout check
     if (millis() - start_time > 30000) {
       Serial.println("\n[Download] Timeout!");
-      free(png_buffer);
-      png_buffer = nullptr;
+      free(bitmap_buffer);
+      bitmap_buffer = nullptr;
       http.end();
       return;
     }
@@ -312,63 +253,67 @@ void download_image() {
   // Verify we got all the data
   if (bytes_read != total_len) {
     Serial.printf("[Download] Incomplete: got %d, expected %d\n", bytes_read, total_len);
-    free(png_buffer);
-    png_buffer = nullptr;
+    free(bitmap_buffer);
+    bitmap_buffer = nullptr;
     return;
   }
 
-  // Now decode the PNG from memory
-  int result = png.open(nullptr, png_open, png_close, png_read, png_seek, png_draw);
+  Serial.println("[Download] Bitmap download complete");
+}
 
-  if (result != PNG_SUCCESS) {
-    Serial.printf("[PNG] Failed to open: error %d\n", result);
-    free(png_buffer);
-    png_buffer = nullptr;
+/**
+ * Render raw bitmap on e-ink display
+ */
+void render_image() {
+  if (bitmap_buffer == nullptr) {
+    Serial.println("[Render] No bitmap data to render");
     return;
   }
 
-  Serial.printf("[PNG] Image specs: %dx%d, %d bpp\n",
-                png.getWidth(), png.getHeight(), png.getBpp());
+  // Parse and validate header
+  uint16_t width, height;
+  if (!parse_bitmap_header(&width, &height)) {
+    Serial.println("[Render] Invalid bitmap header");
+    return;
+  }
+
+  Serial.println("[Render] Rendering bitmap to display...");
+  unsigned long start_time = millis();
 
   // Prepare display for drawing
   display.setFullWindow();
   display.firstPage();
 
-  // Decode PNG (calls png_draw callback for each line)
-  start_time = millis();
-  result = png.decode(nullptr, 0);
-  unsigned long decode_time = millis() - start_time;
+  // Pixel data starts after 8-byte header
+  uint8_t* pixel_data = bitmap_buffer + 8;
+  int pixel_count = width * height;
 
-  if (result == PNG_SUCCESS) {
-    Serial.printf("[PNG] Decode successful (%lu ms)\n", decode_time);
-  } else {
-    Serial.printf("[PNG] Decode failed: error %d\n", result);
+  // Draw all pixels
+  for (int i = 0; i < pixel_count; i++) {
+    uint8_t color_value = pixel_data[i];
+    uint16_t gxepd_color = map_epbm_color(color_value);
+
+    int x = i % width;
+    int y = i / width;
+
+    display.drawPixel(x, y, gxepd_color);
   }
 
-  png.close();
-
-  // Free the buffer
-  free(png_buffer);
-  png_buffer = nullptr;
-  png_buffer_size = 0;
-}
-
-/**
- * Render image on e-ink display
- *
- * Image is already rendered during PNG decoding via png_draw callback.
- * This function just triggers the display refresh.
- */
-void render_image() {
-  Serial.println("[Render] Refreshing display...");
-
-  // Complete the display update
+  // Trigger display refresh
   display.nextPage();
 
-  Serial.println("[Render] Display refresh initiated");
+  unsigned long render_time = millis() - start_time;
+  Serial.printf("[Render] Rendered %d pixels in %lu ms\n", pixel_count, render_time);
+
   // E-ink display refresh takes several seconds
+  Serial.println("[Render] Display refresh in progress...");
   delay(5000);
   Serial.println("[Render] Display refresh complete");
+
+  // Free the bitmap buffer
+  free(bitmap_buffer);
+  bitmap_buffer = nullptr;
+  bitmap_buffer_size = 0;
 }
 
 /**
