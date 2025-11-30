@@ -10,7 +10,8 @@
 // Server configuration
 #define SERVER_HOST "pidev.local"
 #define SERVER_PORT 8080
-#define IMAGE_ENDPOINT "weather/seed-e1002.bin"
+//#define IMAGE_ENDPOINT "weather/seed-e1002.bin"
+#define IMAGE_ENDPOINT "stocks/seed-e1002.bin"
 
 // Update interval in seconds (6 hours = 21600 seconds)
 #define UPDATE_INTERVAL_SEC 21600

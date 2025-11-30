@@ -1,4 +1,5 @@
 mod bitmap;
+mod stocks;
 mod weather;
 
 use axum::{extract::State, response::IntoResponse, routing::get, Router};
@@ -6,6 +7,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use stocks::{fetch_stocks, generate_stocks_svg};
 use weather::{fetch_weather, generate_weather_svg};
 
 #[derive(Parser, Debug)]
@@ -20,6 +22,9 @@ struct Args {
     /// OpenWeather API key
     #[arg(long)]
     open_weather_key: String,
+    /// AlphaVantage API key
+    #[arg(long)]
+    stocks_api_key: String,
     /// HTTP server port
     #[arg(long, default_value = "8080")]
     port: u16,
@@ -33,6 +38,7 @@ struct AppState {
     lat: String,
     lon: String,
     api_key: String,
+    stocks_api_key: String,
 }
 
 async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -71,6 +77,42 @@ async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ([("Content-Type", "application/octet-stream")], bytes)
 }
 
+async fn get_stocks_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Fetch stocks data and generate SVG
+    let bitmap = match fetch_stocks(&state.stocks_api_key).await {
+        Ok(stocks) => {
+            let svg_content = generate_stocks_svg(&stocks);
+
+            // Write SVG to temporary file
+            let temp_svg_path = "/tmp/stocks.svg";
+            match std::fs::write(temp_svg_path, &svg_content) {
+                Ok(_) => {
+                    // Render SVG to bitmap
+                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
+                        Ok(bmp) => bmp,
+                        Err(e) => {
+                            eprintln!("Error rendering SVG: {}", e);
+                            bitmap::generate_test_bitmap(800, 480)
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error writing SVG file: {}", e);
+                    bitmap::generate_test_bitmap(800, 480)
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error fetching stocks: {}", e);
+            bitmap::generate_test_bitmap(800, 480)
+        }
+    };
+
+    let bytes = bitmap.to_bytes();
+
+    ([("Content-Type", "application/octet-stream")], bytes)
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -80,8 +122,8 @@ async fn main() {
         println!("\n=== iot-image Server Starting ===");
         println!("Serving e-ink bitmaps on port {}", args.port);
         println!(
-            "Endpoint: http://localhost:{}/weather/seed-e1002.bin",
-            args.port
+            "Endpoints:\n  - http://localhost:{}/weather/seed-e1002.bin\n  - http://localhost:{}/stocks/seed-e1002.bin",
+            args.port, args.port
         );
         println!("Format: Raw e-ink bitmap (EPBM)");
         println!("Display: 800x480, 7 colors");
@@ -91,10 +133,12 @@ async fn main() {
             lat: args.lat.clone(),
             lon: args.lon.clone(),
             api_key: args.open_weather_key.clone(),
+            stocks_api_key: args.stocks_api_key.clone(),
         });
 
         let app = Router::new()
             .route("/weather/seed-e1002.bin", get(get_bitmap))
+            .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
             .with_state(state);
         let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
