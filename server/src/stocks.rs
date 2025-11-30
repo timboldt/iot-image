@@ -9,6 +9,12 @@ pub struct TimeSeriesDaily {
 
 #[derive(Debug, Deserialize)]
 pub struct DailyData {
+    #[serde(rename = "1. open")]
+    pub open: String,
+    #[serde(rename = "2. high")]
+    pub high: String,
+    #[serde(rename = "3. low")]
+    pub low: String,
     #[serde(rename = "4. close")]
     pub close: String,
 }
@@ -21,6 +27,12 @@ pub struct DigitalCurrencyDaily {
 
 #[derive(Debug, Deserialize)]
 pub struct DigitalDailyData {
+    #[serde(rename = "1. open")]
+    pub open_usd: String,
+    #[serde(rename = "2. high")]
+    pub high_usd: String,
+    #[serde(rename = "3. low")]
+    pub low_usd: String,
     #[serde(rename = "4. close")]
     pub close_usd: String,
 }
@@ -28,7 +40,10 @@ pub struct DigitalDailyData {
 #[derive(Debug)]
 pub struct StockPoint {
     pub date: String,
-    pub price: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
 }
 
 #[derive(Debug)]
@@ -107,9 +122,16 @@ fn parse_time_series_data(data: TimeSeriesDaily) -> Vec<StockPoint> {
         .time_series
         .iter()
         .filter_map(|(date, daily)| {
-            daily.close.parse::<f64>().ok().map(|price| StockPoint {
+            let open = daily.open.parse::<f64>().ok()?;
+            let high = daily.high.parse::<f64>().ok()?;
+            let low = daily.low.parse::<f64>().ok()?;
+            let close = daily.close.parse::<f64>().ok()?;
+            Some(StockPoint {
                 date: date.clone(),
-                price,
+                open,
+                high,
+                low,
+                close,
             })
         })
         .collect();
@@ -125,9 +147,16 @@ fn parse_digital_currency_data(data: DigitalCurrencyDaily) -> Vec<StockPoint> {
         .time_series
         .iter()
         .filter_map(|(date, daily)| {
-            daily.close_usd.parse::<f64>().ok().map(|price| StockPoint {
+            let open = daily.open_usd.parse::<f64>().ok()?;
+            let high = daily.high_usd.parse::<f64>().ok()?;
+            let low = daily.low_usd.parse::<f64>().ok()?;
+            let close = daily.close_usd.parse::<f64>().ok()?;
+            Some(StockPoint {
                 date: date.clone(),
-                price,
+                open,
+                high,
+                low,
+                close,
             })
         })
         .collect();
@@ -200,17 +229,17 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         return svg;
     }
 
-    // Find min and max prices for scaling
+    // Find min and max prices for scaling (use high/low from candlesticks)
     let min_price = stock
         .points
         .iter()
-        .map(|p| p.price)
+        .map(|p| p.low)
         .min_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(0.0);
     let max_price = stock
         .points
         .iter()
-        .map(|p| p.price)
+        .map(|p| p.high)
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(100.0);
 
@@ -238,48 +267,59 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         ));
     }
 
-    // Draw price line
+    // Draw candlesticks
     let num_points = stock.points.len();
-    if num_points > 1 {
-        let mut path = String::from("M ");
-        for (i, point) in stock.points.iter().enumerate() {
-            let px = chart_x + (chart_w * i as i32) / (num_points as i32 - 1);
-            let normalized = (point.price - min_price) / price_range;
-            let py = chart_y + chart_h - (normalized * chart_h as f64) as i32;
-
-            if i == 0 {
-                path.push_str(&format!("{} {} ", px, py));
-            } else {
-                path.push_str(&format!("L {} {} ", px, py));
-            }
-        }
-
-        // Choose color based on symbol
-        let color = match stock.symbol.as_str() {
-            "BTC" => "#9932CC",  // Purple
-            "QQQ" => "#0066CC",  // Blue
-            "IONQ" => "#00AA00", // Green
-            "TSLA" => "#CC0000", // Red
-            _ => "#000000",      // Black
+    if num_points > 0 {
+        let candle_width = if num_points > 1 {
+            (chart_w as f64 / num_points as f64 * 0.7).max(1.0) as i32
+        } else {
+            10
         };
 
-        svg.push_str(&format!(
-            r#"<path d="{}" fill="none" stroke="{}" stroke-width="3"/>"#,
-            path, color
-        ));
+        for (i, point) in stock.points.iter().enumerate() {
+            let px = chart_x + (chart_w * i as i32) / num_points.max(1) as i32 + candle_width / 2;
+
+            // Calculate y positions
+            let high_y = chart_y + chart_h
+                - ((point.high - min_price) / price_range * chart_h as f64) as i32;
+            let low_y =
+                chart_y + chart_h - ((point.low - min_price) / price_range * chart_h as f64) as i32;
+            let open_y = chart_y + chart_h
+                - ((point.open - min_price) / price_range * chart_h as f64) as i32;
+            let close_y = chart_y + chart_h
+                - ((point.close - min_price) / price_range * chart_h as f64) as i32;
+
+            // Determine candle color (green if close >= open, red otherwise)
+            let is_bullish = point.close >= point.open;
+            let color = if is_bullish { "#00AA00" } else { "#CC0000" };
+
+            // Draw high-low line (wick)
+            svg.push_str(&format!(
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="1"/>"#,
+                px, high_y, px, low_y, color
+            ));
+
+            // Draw open-close rectangle (body)
+            let body_top = open_y.min(close_y);
+            let body_height = (open_y - close_y).abs().max(1);
+            svg.push_str(&format!(
+                r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" stroke="{}" stroke-width="1"/>"#,
+                px - candle_width / 2, body_top, candle_width, body_height, color, color
+            ));
+        }
     }
 
     // Display current price and change
     if let (Some(first), Some(last)) = (stock.points.first(), stock.points.last()) {
-        let change = last.price - first.price;
-        let change_pct = (change / first.price) * 100.0;
+        let change = last.close - first.close;
+        let change_pct = (change / first.close) * 100.0;
         let change_sign = if change >= 0.0 { "+" } else { "" };
 
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" font-size="14" fill="black">${:.2}</text>"#,
             x + 5,
             y + height - 20,
-            last.price
+            last.close
         ));
 
         let change_color = if change >= 0.0 { "green" } else { "red" };
