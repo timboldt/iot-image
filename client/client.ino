@@ -4,6 +4,12 @@
 
 #include "config.h"
 
+// Display modes
+enum DisplayMode { MODE_WEATHER = 0, MODE_STOCKS = 1 };
+
+// RTC memory to persist display mode across deep sleep
+RTC_DATA_ATTR DisplayMode current_mode = MODE_WEATHER;
+
 // Display object for reTerminal e1002 (7.3" color, GDEP073E01)
 GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT> display(
     GxEPD2_730c_GDEP073E01(EPD_CS_PIN, EPD_DC_PIN, EPD_RES_PIN, EPD_BUSY_PIN));
@@ -13,6 +19,8 @@ SPIClass hspi(HSPI);
 
 // Forward declarations
 void setup_wifi();
+void setup_buttons();
+void check_wake_reason();
 void download_and_render_image();
 void deep_sleep();
 
@@ -36,6 +44,10 @@ void setup() {
 
     Serial.printf("[Display] Initialized (7.3\" color e-ink, %dx%d)\n",
                   EPD_WIDTH, EPD_HEIGHT);
+
+    // Setup buttons and check wake reason
+    setup_buttons();
+    check_wake_reason();
 
     // Connect to WiFi
     setup_wifi();
@@ -104,6 +116,70 @@ void setup_wifi() {
 }
 
 /**
+ * Setup button pins with pullup resistors
+ * Buttons are active-low (LOW when pressed)
+ */
+void setup_buttons() {
+    pinMode(BUTTON_KEY0,
+            INPUT_PULLUP);  // Button 1 (Refresh - wake & keep current mode)
+    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Stocks)
+    pinMode(BUTTON_KEY2, INPUT_PULLUP);  // Button 3 (Weather)
+
+    Serial.println("[Buttons] Initialized with pullups");
+}
+
+/**
+ * Check wake reason and update display mode if button was pressed
+ * Buttons are active-low, so we wake on LOW level
+ */
+void check_wake_reason() {
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+    switch (wakeup_reason) {
+        case ESP_SLEEP_WAKEUP_EXT1: {
+            Serial.println("[Wake] Woke up from button press");
+
+            // Get which GPIO pin(s) caused the wakeup (more reliable than
+            // digitalRead)
+            uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
+
+            // Check which button triggered the wakeup
+            if (wakeup_pin_mask & (1ULL << BUTTON_KEY0)) {
+                Serial.printf(
+                    "[Wake] Button 1 (Green) pressed - refreshing current mode "
+                    "(%s)\n",
+                    current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+                // Note: current_mode unchanged - just wake and refresh display
+            } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY1)) {
+                Serial.println(
+                    "[Wake] Button 2 (Middle) pressed - switching to STOCKS");
+                current_mode = MODE_STOCKS;
+            } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY2)) {
+                Serial.println(
+                    "[Wake] Button 3 (Left) pressed - switching to WEATHER");
+                current_mode = MODE_WEATHER;
+            }
+
+            delay(200);  // Debounce
+            break;
+        }
+
+        case ESP_SLEEP_WAKEUP_TIMER:
+            Serial.println("[Wake] Woke up from timer");
+            Serial.printf("[Wake] Current mode: %s\n",
+                          current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+            break;
+
+        default:
+            Serial.printf("[Wake] First boot or reset (reason: %d)\n",
+                          wakeup_reason);
+            Serial.printf("[Wake] Current mode: %s\n",
+                          current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+            break;
+    }
+}
+
+/**
  * Parse EPBM bitmap header from 8-byte buffer
  * Returns true if valid, false otherwise
  */
@@ -165,10 +241,20 @@ void download_and_render_image() {
         return;
     }
 
-    HTTPClient http;
-    String url = String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/" +
-                 IMAGE_ENDPOINT;
+    // Select endpoint based on current display mode
+    const char* endpoint;
+    if (current_mode == MODE_WEATHER) {
+        endpoint = "weather/seed-e1002.bin";
+    } else {
+        endpoint = "stocks/seed-e1002.bin";
+    }
 
+    HTTPClient http;
+    String url =
+        String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/" + endpoint;
+
+    Serial.printf("[Stream] Mode: %s\n",
+                  current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
     Serial.printf("[Stream] Fetching: %s\n", url.c_str());
 
     http.begin(url);
@@ -304,20 +390,32 @@ void download_and_render_image() {
 
 /**
  * Deep sleep until next update
- * Wakes automatically and runs setup() again
+ * Wakes automatically from timer OR button press
  */
 void deep_sleep() {
     Serial.printf("[Sleep] Sleeping for %d seconds\n", UPDATE_INTERVAL_SEC);
+    Serial.printf("[Sleep] Current mode: %s (will persist on timer wake)\n",
+                  current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
 
     // Calculate wake time
     uint64_t sleep_duration_us = UPDATE_INTERVAL_SEC * 1000000ULL;
+
+    // Enable wake on timer
+    esp_sleep_enable_timer_wakeup(sleep_duration_us);
+
+    // Enable wake on button press (ext1 with multiple pins)
+    // Buttons are active-low, so wake when ANY button goes LOW
+    uint64_t button_mask =
+        (1ULL << BUTTON_KEY0) | (1ULL << BUTTON_KEY1) | (1ULL << BUTTON_KEY2);
+    esp_sleep_enable_ext1_wakeup(button_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+
+    Serial.println("[Sleep] Wake sources: timer + buttons (any button press)");
 
     // Gracefully print before sleeping
     Serial.flush();
     delay(100);
 
     // Enter deep sleep
-    esp_sleep_enable_timer_wakeup(sleep_duration_us);
     esp_deep_sleep_start();
 
     // Fallback: regular delay (for testing/development)
