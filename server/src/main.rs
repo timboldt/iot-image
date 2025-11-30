@@ -1,10 +1,12 @@
 mod bitmap;
 mod weather;
 
-use axum::{response::IntoResponse, routing::get, Router};
+use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use chrono::prelude::*;
 use clap::Parser;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
 use weather::fetch_weather;
 
 #[derive(Parser, Debug)]
@@ -25,6 +27,9 @@ struct Args {
     /// Enable HTTP server mode
     #[arg(long, default_value = "false")]
     serve: bool,
+    /// SVG file path to render as bitmap
+    #[arg(long)]
+    svg: Option<String>,
 }
 
 fn temperature_text(temp: f32) -> &'static str {
@@ -67,9 +72,25 @@ fn wind_text(wind_speed: f32) -> &'static str {
     }
 }
 
-async fn get_bitmap() -> impl IntoResponse {
-    // Generate test bitmap for e-ink display (800x480, 7 colors)
-    let bitmap = bitmap::generate_test_bitmap(800, 480);
+#[derive(Clone)]
+struct AppState {
+    svg_path: Option<String>,
+}
+
+async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Generate bitmap for e-ink display (800x480, 7 colors)
+    let bitmap = if let Some(svg_path) = &state.svg_path {
+        match bitmap::render_svg_to_bitmap(Path::new(svg_path), 800, 480) {
+            Ok(bmp) => bmp,
+            Err(e) => {
+                eprintln!("Error rendering SVG: {}", e);
+                bitmap::generate_test_bitmap(800, 480)
+            }
+        }
+    } else {
+        bitmap::generate_test_bitmap(800, 480)
+    };
+
     let bytes = bitmap.to_bytes();
 
     ([("Content-Type", "application/octet-stream")], bytes)
@@ -88,9 +109,21 @@ async fn main() {
             args.port
         );
         println!("Format: Raw e-ink bitmap (EPBM)");
-        println!("Display: 800x480, 7 colors\n");
+        println!("Display: 800x480, 7 colors");
 
-        let app = Router::new().route("/weather/seed-e1002.bin", get(get_bitmap));
+        if let Some(ref svg_path) = args.svg {
+            println!("SVG input: {}\n", svg_path);
+        } else {
+            println!("Using test pattern (no SVG specified)\n");
+        }
+
+        let state = Arc::new(AppState {
+            svg_path: args.svg.clone(),
+        });
+
+        let app = Router::new()
+            .route("/weather/seed-e1002.bin", get(get_bitmap))
+            .with_state(state);
         let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
