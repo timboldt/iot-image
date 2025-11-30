@@ -1,4 +1,3 @@
-#include <Fonts/FreeMonoBold9pt7b.h>
 #include <GxEPD2_7C.h>  // 7.3" color e-ink
 #include <HTTPClient.h>
 #include <WiFi.h>

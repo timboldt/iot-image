@@ -8,8 +8,7 @@
 #define WIFI_PASSWORD SECRET_PASS
 
 // Server configuration
-// #define SERVER_HOST "pidev.local"
-#define SERVER_HOST "tims.macbook.black.lan"
+#define SERVER_HOST "pidev.local"
 #define SERVER_PORT 8080
 #define IMAGE_ENDPOINT "weather/seed-e1002.bin"
 
