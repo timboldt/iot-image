@@ -113,6 +113,44 @@ async fn get_stocks_bitmap(State(state): State<Arc<AppState>>) -> impl IntoRespo
     ([("Content-Type", "application/octet-stream")], bytes)
 }
 
+async fn get_weather_svg(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Fetch weather data and generate SVG
+    match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
+        Ok(weather) => {
+            let svg_content = generate_weather_svg(&weather);
+            ([("Content-Type", "image/svg+xml")], svg_content)
+        }
+        Err(e) => {
+            let error_svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
+                </svg>"#,
+                e
+            );
+            ([("Content-Type", "image/svg+xml")], error_svg)
+        }
+    }
+}
+
+async fn get_stocks_svg(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Fetch stocks data and generate SVG
+    match fetch_stocks(&state.stocks_api_key).await {
+        Ok(stocks) => {
+            let svg_content = generate_stocks_svg(&stocks);
+            ([("Content-Type", "image/svg+xml")], svg_content)
+        }
+        Err(e) => {
+            let error_svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
+                </svg>"#,
+                e
+            );
+            ([("Content-Type", "image/svg+xml")], error_svg)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -122,8 +160,8 @@ async fn main() {
         println!("\n=== iot-image Server Starting ===");
         println!("Serving e-ink bitmaps on port {}", args.port);
         println!(
-            "Endpoints:\n  - http://localhost:{}/weather/seed-e1002.bin\n  - http://localhost:{}/stocks/seed-e1002.bin",
-            args.port, args.port
+            "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg",
+            args.port, args.port, args.port, args.port
         );
         println!("Format: Raw e-ink bitmap (EPBM)");
         println!("Display: 800x480, 7 colors");
@@ -139,6 +177,8 @@ async fn main() {
         let app = Router::new()
             .route("/weather/seed-e1002.bin", get(get_bitmap))
             .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
+            .route("/weather/svg", get(get_weather_svg))
+            .route("/stocks/svg", get(get_stocks_svg))
             .with_state(state);
         let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
