@@ -119,6 +119,9 @@ pub async fn fetch_weather(
 /// # Returns
 /// A String containing the SVG markup
 pub fn generate_weather_svg(weather: &WeatherData) -> String {
+    // Create timezone offset from the weather data
+    let tz_offset = chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap();
+
     let mut svg = String::from(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">"#,
     );
@@ -128,121 +131,197 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
     svg.push_str(r#"  <rect width="800" height="480" fill="white"/>"#);
     svg.push('\n');
 
-    // Title
-    svg.push_str(r#"  <text x="400" y="40" font-family="Arial" font-size="32" font-weight="bold" text-anchor="middle" fill="black">"#);
-    svg.push_str("Weather Forecast");
-    svg.push_str("</text>\n");
+    // Left section: Today's detailed forecast (takes ~60% of width)
+    let left_width = 480.0;
+    let today = &weather.daily[0];
 
-    // Current weather section
-    let y_current = 80;
-    svg.push_str(&format!(r#"  <text x="20" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="black">Current:</text>"#, y_current));
-    svg.push('\n');
-
-    svg.push_str(&format!(r#"  <text x="150" y="{}" font-family="Arial" font-size="20" fill="black">{:.1}°F ({})</text>"#,
-        y_current, weather.current.temp, temperature_text(weather.current.temp)));
-    svg.push('\n');
-
+    // Date header
+    let today_time = Utc
+        .timestamp_opt(today.dt, 0)
+        .unwrap()
+        .with_timezone(&tz_offset);
     svg.push_str(&format!(
-        r#"  <text x="320" y="{}" font-family="Arial" font-size="20" fill="black">{}% ({})</text>"#,
-        y_current,
-        weather.current.humidity,
-        humidity_text(weather.current.humidity, weather.current.temp)
+        r#"  <text x="20" y="35" font-family="Arial" font-size="28" font-weight="bold" fill="black">{}</text>"#,
+        today_time.format("%A, %B %e")
     ));
     svg.push('\n');
 
-    if let Some(w) = weather.current.weather.first() {
+    // Weather condition
+    if let Some(w) = today.weather.first() {
         svg.push_str(&format!(
-            r#"  <text x="450" y="{}" font-family="Arial" font-size="20" fill="black">{}</text>"#,
-            y_current, w.main
+            r#"  <text x="20" y="70" font-family="Arial" font-size="24" fill="black">{}</text>"#,
+            w.main
         ));
         svg.push('\n');
     }
 
-    // 5-day forecast
-    svg.push_str(r#"  <text x="20" y="130" font-family="Arial" font-size="24" font-weight="bold" fill="black">5-Day Forecast:</text>"#);
+    // Morning/Day/Night temperatures in a row
+    let temp_y = 140.0;
+    let temp_spacing = 140.0;
+
+    // Morning
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="18" fill="gray">Morning</text>"#,
+        temp_y - 10.0
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
+        temp_y + 25.0, today.temp.morn
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
+        temp_y + 48.0,
+        temperature_text(today.temp.morn)
+    ));
     svg.push('\n');
 
-    let days_to_show = weather.daily.len().min(5);
-    let column_width = 780.0 / days_to_show as f32;
+    // Day
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="gray">Day</text>"#,
+        40.0 + temp_spacing,
+        temp_y - 10.0
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
+        40.0 + temp_spacing, temp_y + 25.0, today.temp.day
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
+        40.0 + temp_spacing,
+        temp_y + 48.0,
+        temperature_text(today.temp.day)
+    ));
+    svg.push('\n');
 
-    for (day_idx, day) in weather.daily.iter().take(days_to_show).enumerate() {
-        let x = 10.0 + (day_idx as f32 * column_width);
-        let y_base = 160.0;
+    // Night
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="gray">Night</text>"#,
+        40.0 + 2.0 * temp_spacing,
+        temp_y - 10.0
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
+        40.0 + 2.0 * temp_spacing, temp_y + 25.0, today.temp.night
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
+        40.0 + 2.0 * temp_spacing,
+        temp_y + 48.0,
+        temperature_text(today.temp.night)
+    ));
+    svg.push('\n');
 
-        let day_time = Utc.timestamp_opt(day.dt, 0).unwrap();
+    // Humidity and Wind in a row
+    let detail_y = 280.0;
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity: {}% ({})</text>"#,
+        detail_y, today.humidity, humidity_text(today.humidity, today.temp.day)
+    ));
+    svg.push('\n');
+
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind: {:.0} mph ({})</text>"#,
+        detail_y + 35.0, today.wind_speed, wind_text(today.wind_speed)
+    ));
+    svg.push('\n');
+
+    // Sunrise/sunset
+    let sunrise_time = Utc
+        .timestamp_opt(today.sunrise, 0)
+        .unwrap()
+        .with_timezone(&tz_offset);
+    let sunset_time = Utc
+        .timestamp_opt(today.sunset, 0)
+        .unwrap()
+        .with_timezone(&tz_offset);
+
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Sunrise: {}</text>"#,
+        detail_y + 70.0, sunrise_time.format("%l:%M %P")
+    ));
+    svg.push('\n');
+
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Sunset: {}</text>"#,
+        detail_y + 105.0, sunset_time.format("%l:%M %P")
+    ));
+    svg.push('\n');
+
+    // Vertical divider
+    svg.push_str(&format!(
+        r#"  <line x1="{}" y1="20" x2="{}" y2="460" stroke="black" stroke-width="2"/>"#,
+        left_width, left_width
+    ));
+    svg.push('\n');
+
+    // Right section: 5-day forecast stacked vertically
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="35" font-family="Arial" font-size="24" font-weight="bold" fill="black">5-Day Forecast</text>"#,
+        left_width + 20.0
+    ));
+    svg.push('\n');
+
+    let right_x = left_width + 20.0;
+    let forecast_start_y = 70.0;
+    let row_height = 80.0;
+
+    for (idx, day) in weather.daily.iter().take(5).enumerate() {
+        let y = forecast_start_y + (idx as f32 * row_height);
+
+        let day_time = Utc
+            .timestamp_opt(day.dt, 0)
+            .unwrap()
+            .with_timezone(&tz_offset);
         let day_name =
             ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][day_time.weekday() as usize];
 
-        // Day header with border
-        svg.push_str(&format!(r#"  <rect x="{}" y="{}" width="{}" height="300" fill="none" stroke="black" stroke-width="1"/>"#,
-            x, y_base, column_width, ));
+        // Day name and date
+        svg.push_str(&format!(
+            r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" font-weight="bold" fill="black">{}</text>"#,
+            right_x, y + 5.0, day_name
+        ));
         svg.push('\n');
 
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" font-weight="bold" text-anchor="middle" fill="black">{}</text>"#,
-            x + column_width / 2.0, y_base + 20.0, day_name));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" text-anchor="middle" fill="black">{}</text>"#,
-            x + column_width / 2.0, y_base + 38.0, day_time.format("%m/%d")));
+        svg.push_str(&format!(
+            r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" fill="gray">{}</text>"#,
+            right_x,
+            y + 25.0,
+            day_time.format("%m/%d")
+        ));
         svg.push('\n');
 
         // Weather condition
         if let Some(w) = day.weather.first() {
-            svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" text-anchor="middle" fill="black">{}</text>"#,
-                x + column_width / 2.0, y_base + 60.0, w.main));
+            svg.push_str(&format!(
+                r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="black">{}</text>"#,
+                right_x, y + 45.0, w.main
+            ));
             svg.push('\n');
         }
 
-        // Temperature info
-        let y_temp = y_base + 90.0;
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" text-anchor="middle" fill="black">Day: {:.0}°F</text>"#,
-            x + column_width / 2.0, y_temp, day.temp.day));
+        // Temperature
+        svg.push_str(&format!(
+            r#"  <text x="{}" y="{}" font-family="Arial" font-size="20" font-weight="bold" fill="black">{:.0}° ({})</text>"#,
+            right_x, y + 68.0, day.temp.day, temperature_text(day.temp.day)
+        ));
         svg.push('\n');
 
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="12" text-anchor="middle" fill="gray">{}</text>"#,
-            x + column_width / 2.0, y_temp + 18.0, temperature_text(day.temp.day)));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="12" text-anchor="middle" fill="black">Hi: {:.0}°F</text>"#,
-            x + column_width / 2.0, y_temp + 38.0, day.temp.max));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="12" text-anchor="middle" fill="black">Lo: {:.0}°F</text>"#,
-            x + column_width / 2.0, y_temp + 53.0, day.temp.min));
-        svg.push('\n');
-
-        // Humidity
-        let y_hum = y_base + 165.0;
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" text-anchor="middle" fill="black">Humidity: {}%</text>"#,
-            x + column_width / 2.0, y_hum, day.humidity));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="12" text-anchor="middle" fill="gray">{}</text>"#,
-            x + column_width / 2.0, y_hum + 18.0, humidity_text(day.humidity, day.temp.day)));
-        svg.push('\n');
-
-        // Wind
-        let y_wind = y_base + 210.0;
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" text-anchor="middle" fill="black">Wind: {:.0} mph</text>"#,
-            x + column_width / 2.0, y_wind, day.wind_speed));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="12" text-anchor="middle" fill="gray">{}</text>"#,
-            x + column_width / 2.0, y_wind + 18.0, wind_text(day.wind_speed)));
-        svg.push('\n');
-
-        // Sunrise/sunset
-        let sunrise_time = Utc.timestamp_opt(day.sunrise, 0).unwrap();
-        let sunset_time = Utc.timestamp_opt(day.sunset, 0).unwrap();
-
-        let y_sun = y_base + 255.0;
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="11" text-anchor="middle" fill="black">↑{}</text>"#,
-            x + column_width / 2.0 - 25.0, y_sun, sunrise_time.format("%H:%M")));
-        svg.push('\n');
-
-        svg.push_str(&format!(r#"  <text x="{}" y="{}" font-family="Arial" font-size="11" text-anchor="middle" fill="black">↓{}</text>"#,
-            x + column_width / 2.0 + 25.0, y_sun, sunset_time.format("%H:%M")));
-        svg.push('\n');
+        // Separator line (except for last item)
+        if idx < 4 {
+            svg.push_str(&format!(
+                r#"  <line x1="{}" y1="{}" x2="780" y2="{}" stroke="lightgray" stroke-width="1"/>"#,
+                right_x,
+                y + row_height - 5.0,
+                y + row_height - 5.0
+            ));
+            svg.push('\n');
+        }
     }
 
     svg.push_str("</svg>");
