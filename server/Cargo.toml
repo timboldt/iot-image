@@ -2,23 +2,30 @@
 name = "iot-image-server"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 
 [dependencies]
-chrono = "0.4.38"
-image = "0.25.1"
-num-complex = "0.4.4"
-plotters = "0.3.5"
-plotters-backend = "0.3.5"
-plotters-bitmap = "0.3.3"
-reqwest = { version = "0.11", features = ["json"] }
+chrono = "0.4"
+image = "0.25"
+num-complex = "0.4"
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder"] }
+plotters-backend = "0.3"
+plotters-bitmap = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["fs", "trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
 
 [profile.release]
 lto = true
 strip = true
 opt-level = "z"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
