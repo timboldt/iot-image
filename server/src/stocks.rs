@@ -176,13 +176,49 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         x, y, width, height
     ));
 
-    // Title
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="middle" font-size="18" font-weight="bold" fill="black">{}</text>"#,
-        x + width / 2,
-        y + 20,
-        stock.symbol
-    ));
+    // Display current price and change on same line as symbol
+    if let (Some(first), Some(last)) = (stock.points.first(), stock.points.last()) {
+        let change = last.close - first.close;
+        let change_pct = (change / first.close) * 100.0;
+        let change_sign = if change >= 0.0 { "+" } else { "" };
+        let change_color = if change >= 0.0 { "green" } else { "red" };
+
+        // Current price (top left)
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="start" font-size="14" fill="black">${:.2}</text>"#,
+            x + 5,
+            y + 20,
+            last.close
+        ));
+
+        // Symbol (center)
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="middle" font-size="18" font-weight="bold" fill="black">{}</text>"#,
+            x + width / 2,
+            y + 20,
+            stock.symbol
+        ));
+
+        // Change amount and percentage (top right)
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="{}">{}{:.2} ({}{:.1}%)</text>"#,
+            x + width - 5,
+            y + 20,
+            change_color,
+            change_sign,
+            change,
+            change_sign,
+            change_pct
+        ));
+    } else {
+        // Symbol only if no price data
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="middle" font-size="18" font-weight="bold" fill="black">{}</text>"#,
+            x + width / 2,
+            y + 20,
+            stock.symbol
+        ));
+    }
 
     if stock.points.is_empty() {
         return svg;
@@ -210,9 +246,9 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
 
     // Chart area (leave space for title and labels)
     let chart_x = x + 40;
-    let chart_y = y + 30;
+    let chart_y = y + 35;
     let chart_w = width - 50;
-    let chart_h = height - 60;
+    let chart_h = height - 55;
 
     // Draw grid lines
     for i in 0..5 {
@@ -268,44 +304,26 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         }
     }
 
-    // Display current price and change
-    if let (Some(first), Some(last)) = (stock.points.first(), stock.points.last()) {
-        let change = last.close - first.close;
-        let change_pct = (change / first.close) * 100.0;
-        let change_sign = if change >= 0.0 { "+" } else { "" };
-
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="14" fill="black">${:.2}</text>"#,
-            x + 5,
-            y + height - 20,
-            last.close
-        ));
-
-        let change_color = if change >= 0.0 { "green" } else { "red" };
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="12" fill="{}">{}{:.2} ({}{:.1}%)</text>"#,
-            x + 5,
-            y + height - 5,
-            change_color,
-            change_sign,
-            change,
-            change_sign,
-            change_pct
-        ));
-    }
-
     // Y-axis labels (min and max)
+    let format_price = |price: f64| -> String {
+        if price > 5000.0 {
+            format!("${:.0}K", price / 1000.0)
+        } else {
+            format!("${:.0}", price)
+        }
+    };
+
     svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">${:.0}</text>"#,
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{}</text>"#,
         chart_x - 5,
         chart_y + 5,
-        max_price
+        format_price(max_price)
     ));
     svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">${:.0}</text>"#,
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{}</text>"#,
         chart_x - 5,
         chart_y + chart_h,
-        min_price
+        format_price(min_price)
     ));
 
     svg
