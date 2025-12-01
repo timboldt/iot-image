@@ -107,7 +107,8 @@ The service reads configuration from `~/bin/env.txt`. This file should contain:
 OPEN_WEATHER_LAT=37.7749          # Your latitude
 OPEN_WEATHER_LON=-122.4194        # Your longitude
 OPEN_WEATHER_KEY=your_api_key     # Your OpenWeatherMap API key
-PORT=8080                          # Server port (default: 8080)
+TWELVE_DATA_API_KEY=your_api_key  # Twelve Data API key
+PORT=8080                         # Server port (default: 8080)
 ```
 
 Get an OpenWeatherMap API key at: https://openweathermap.org/api

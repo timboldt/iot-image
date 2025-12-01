@@ -22,7 +22,7 @@ struct Args {
     /// OpenWeather API key
     #[arg(long)]
     open_weather_key: String,
-    /// AlphaVantage API key
+    /// Twelve Data API key
     #[arg(long)]
     stocks_api_key: String,
     /// HTTP server port

@@ -1,42 +1,42 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 
+// Twelve Data API response structures
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub struct TimeSeriesDaily {
-    #[serde(rename = "Time Series (Daily)")]
-    pub time_series: HashMap<String, DailyData>,
+pub struct TwelveDataResponse {
+    pub meta: TwelveDataMeta,
+    pub values: Vec<TwelveDataValue>,
+    pub status: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct TwelveDataMeta {
+    pub symbol: String,
+    pub interval: String,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub currency_base: Option<String>,
+    #[serde(default)]
+    pub currency_quote: Option<String>,
+    #[serde(default)]
+    pub exchange_timezone: Option<String>,
+    pub exchange: String,
+    #[serde(rename = "type")]
+    pub instrument_type: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DailyData {
-    #[serde(rename = "1. open")]
+pub struct TwelveDataValue {
+    pub datetime: String,
     pub open: String,
-    #[serde(rename = "2. high")]
     pub high: String,
-    #[serde(rename = "3. low")]
     pub low: String,
-    #[serde(rename = "4. close")]
     pub close: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct DigitalCurrencyDaily {
-    #[serde(rename = "Time Series (Digital Currency Daily)")]
-    pub time_series: HashMap<String, DigitalDailyData>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DigitalDailyData {
-    #[serde(rename = "1. open")]
-    pub open_usd: String,
-    #[serde(rename = "2. high")]
-    pub high_usd: String,
-    #[serde(rename = "3. low")]
-    pub low_usd: String,
-    #[serde(rename = "4. close")]
-    pub close_usd: String,
-}
-
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct StockPoint {
     pub date: String,
@@ -57,39 +57,40 @@ pub struct StocksData {
     pub stocks: Vec<StockData>,
 }
 
+fn parse_twelve_data(data: TwelveDataResponse) -> Vec<StockPoint> {
+    let mut points: Vec<StockPoint> = data
+        .values
+        .iter()
+        .filter_map(|value| {
+            let open = value.open.parse::<f64>().ok()?;
+            let high = value.high.parse::<f64>().ok()?;
+            let low = value.low.parse::<f64>().ok()?;
+            let close = value.close.parse::<f64>().ok()?;
+            Some(StockPoint {
+                date: value.datetime.clone(),
+                open,
+                high,
+                low,
+                close,
+            })
+        })
+        .collect();
+
+    // Twelve Data returns newest first, so reverse for ascending order (oldest to newest)
+    points.reverse();
+    points
+}
+
 pub async fn fetch_stocks(api_key: &str) -> Result<StocksData, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let mut stocks = Vec::new();
 
-    // Fetch Bitcoin (BTC)
-    let btc_url = format!(
-        "https://www.alphavantage.co/query?function=DIGITAL_CURRENCY_DAILY&symbol=BTC&market=USD&apikey={}",
-        api_key
-    );
-    let btc_text = client.get(&btc_url).send().await?.text().await?;
-    eprintln!(
-        "BTC API Response (first 500 chars): {}",
-        &btc_text.chars().take(500).collect::<String>()
-    );
+    // Fetch all symbols (stocks and crypto) using Twelve Data
+    let symbols = vec!["BTC/USD", "QQQ", "IONQ", "TSLA"];
 
-    let btc_response: DigitalCurrencyDaily = serde_json::from_str(&btc_text).map_err(|e| {
-        format!(
-            "Failed to parse BTC response: {}. Response: {}",
-            e,
-            &btc_text.chars().take(200).collect::<String>()
-        )
-    })?;
-    let btc_points = parse_digital_currency_data(btc_response);
-    stocks.push(StockData {
-        symbol: "BTC".to_string(),
-        points: btc_points,
-    });
-
-    // Fetch regular stocks
-    let symbols = vec!["QQQ", "IONQ", "TSLA"];
     for symbol in symbols {
         let url = format!(
-            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={}&apikey={}",
+            "https://api.twelvedata.com/time_series?symbol={}&interval=1day&outputsize=60&apikey={}",
             symbol, api_key
         );
         let text = client.get(&url).send().await?.text().await?;
@@ -99,7 +100,7 @@ pub async fn fetch_stocks(api_key: &str) -> Result<StocksData, Box<dyn std::erro
             &text.chars().take(500).collect::<String>()
         );
 
-        let response: TimeSeriesDaily = serde_json::from_str(&text).map_err(|e| {
+        let response: TwelveDataResponse = serde_json::from_str(&text).map_err(|e| {
             format!(
                 "Failed to parse {} response: {}. Response: {}",
                 symbol,
@@ -107,64 +108,22 @@ pub async fn fetch_stocks(api_key: &str) -> Result<StocksData, Box<dyn std::erro
                 &text.chars().take(200).collect::<String>()
             )
         })?;
-        let points = parse_time_series_data(response);
+
+        let points = parse_twelve_data(response);
+        // Use "BTC" for display instead of "BTC/USD"
+        let display_symbol = if symbol == "BTC/USD" {
+            "BTC".to_string()
+        } else {
+            symbol.to_string()
+        };
+
         stocks.push(StockData {
-            symbol: symbol.to_string(),
+            symbol: display_symbol,
             points,
         });
     }
 
     Ok(StocksData { stocks })
-}
-
-fn parse_time_series_data(data: TimeSeriesDaily) -> Vec<StockPoint> {
-    let mut points: Vec<StockPoint> = data
-        .time_series
-        .iter()
-        .filter_map(|(date, daily)| {
-            let open = daily.open.parse::<f64>().ok()?;
-            let high = daily.high.parse::<f64>().ok()?;
-            let low = daily.low.parse::<f64>().ok()?;
-            let close = daily.close.parse::<f64>().ok()?;
-            Some(StockPoint {
-                date: date.clone(),
-                open,
-                high,
-                low,
-                close,
-            })
-        })
-        .collect();
-
-    points.sort_by(|a, b| b.date.cmp(&a.date)); // Sort descending (newest first)
-    points.truncate(60); // Last 60 days
-    points.reverse(); // Reverse to ascending order for charting
-    points
-}
-
-fn parse_digital_currency_data(data: DigitalCurrencyDaily) -> Vec<StockPoint> {
-    let mut points: Vec<StockPoint> = data
-        .time_series
-        .iter()
-        .filter_map(|(date, daily)| {
-            let open = daily.open_usd.parse::<f64>().ok()?;
-            let high = daily.high_usd.parse::<f64>().ok()?;
-            let low = daily.low_usd.parse::<f64>().ok()?;
-            let close = daily.close_usd.parse::<f64>().ok()?;
-            Some(StockPoint {
-                date: date.clone(),
-                open,
-                high,
-                low,
-                close,
-            })
-        })
-        .collect();
-
-    points.sort_by(|a, b| b.date.cmp(&a.date)); // Sort descending (newest first)
-    points.truncate(60); // Last 60 days
-    points.reverse(); // Reverse to ascending order for charting
-    points
 }
 
 pub fn generate_stocks_svg(stocks: &StocksData) -> String {
