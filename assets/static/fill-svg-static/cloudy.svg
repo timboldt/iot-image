@@ -1,0 +1,32 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+>
+  <defs>
+    <!-- Symbol #b, originally gradient fill + light stroke, now white fill + black stroke -->
+    <symbol id="b" viewBox="0 0 350 222">
+      <path
+        fill="white"
+        stroke="black"
+        stroke-miterlimit="10"
+        stroke-width="6"
+        d="m291 107-2.5.1
+           A83.9 83.9 0 00135.6 43
+           A56 56 0 0051 91
+           a56.6 56.6 0 00.8 9
+           A60 60 0 0063 219
+           l4-.2v.2h224
+           a56 56 0 000-112Z"
+      />
+    </symbol>
+  </defs>
+
+  <!-- Use the symbol at the same position as originally -->
+  <use
+    xlink:href="#b"
+    width="350"
+    height="222"
+    transform="translate(81 145)"
+  />
+</svg>

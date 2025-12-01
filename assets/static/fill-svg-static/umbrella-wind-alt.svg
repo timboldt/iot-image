@@ -1,0 +1,105 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+>
+  <!-- First path: was stroke="url(#c)", now solid black stroke -->
+  <symbol id="umberella" viewBox="23 87 430 370">
+    <path
+      fill="none"
+      stroke="black"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="12"
+      d="M220 360a24 24 0 11-34-34l1.8-1.8L343 169"
+    />
+
+    <!-- Second path: was fill="url(#d)" and stroke="#ef4444", now fill="red" and stroke="black" -->
+    <path
+      fill="red"
+      stroke="black"
+      stroke-miterlimit="10"
+      stroke-width="6"
+      d="M442.8 240c-37.5 37.4-105.9 29.8-152.7-17s-54.5-115.3-17-152.8l4.9 13.1
+        a71.2 71.2 0 0041.7 41l11.6 4 2.3 7.3
+        a70.8 70.8 0 0043.8 43.8l7.3 2.4 4 11.5
+        a71.1 71.1 0 0041 41.7Z"
+    />
+
+    <!-- Third path: was stroke="#ef4444", now stroke="black" -->
+    <path
+      fill="none"
+      stroke="black"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="6"
+      d="M384.6 181.8c-33.1 42.6-94.5 41.1-94.5 41.1
+        s-1.5-61.4 41.1-94.6"
+    />
+  </symbol>
+  <defs>
+    <!-- Symbol #e (two arcs), originally using gradients #a and #b -->
+  <symbol id="arc-pair" viewBox="50 0 258 396">
+    <path
+      fill="none"
+      stroke="#6f6fe8"
+      stroke-linecap="round"
+      stroke-miterlimit="10"
+      stroke-width="12"
+      d="M105.2 10.8 A15.6 15.6 0 11116.4 37 H51"
+    transform="translate(-45 36)"
+    />
+    <path
+      fill="none"
+      stroke="#6f6fe8"
+      stroke-linecap="round"
+      stroke-miterlimit="10"
+      stroke-width="12"
+      d="M105.2 10.8 A15.6 15.6 0 11116.4 37 H6"
+    transform="translate(0 66)"
+    />
+    <path
+      fill="none"
+      stroke="#6f6fe8"
+      stroke-linecap="round"
+      stroke-miterlimit="10"
+      stroke-width="12"
+      d="M105.2 10.8A15.6 15.6 0 11116.4 37H6"
+    transform="translate(0 165) scale(1, -1)"
+    />
+    <path
+      fill="none"
+      stroke="#6f6fe8"
+      stroke-linecap="round"
+      stroke-miterlimit="10"
+      stroke-width="12"
+      d="M60.7 85.2A15.6 15.6 0 1071.9 59H6"
+    transform="translate(0 100)"
+    />
+    </symbol>
+  </defs>
+
+  <!-- Use the symbol #e (two arcs), originally gradient strokes, now black -->
+  <use
+    xlink:href="#arc-pair"
+    transform="translate(62.5 31)"
+  />
+  <use
+    xlink:href="#umberella"
+  />
+  <!-- Text "km/h", originally fill="#374251", now fill="black" -->
+  <!-- <text
+    x="252"
+    y="452"
+    fill="black"
+    font-size="106.667px"
+    font-weight="bold"
+    font-family="Roboto"
+    text-anchor="middle"
+    stroke="white"
+    stroke-width="15"
+    paint-order="stroke"
+  >
+    km/h
+  </text> -->
+</svg>

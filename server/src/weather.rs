@@ -1,5 +1,7 @@
+use base64::{engine::general_purpose, Engine as _};
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::fs;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WeatherData {
@@ -43,6 +45,38 @@ pub struct Weather {
     pub description: String,
     pub main: String,
     pub icon: String,
+}
+
+/// Maps OpenWeatherMap icon codes to local SVG icon filenames
+fn map_weather_icon(icon_code: &str) -> &'static str {
+    match icon_code {
+        "01d" => "clear-day.svg",
+        "01n" => "clear-night.svg",
+        "02d" => "partly-cloudy-day.svg",
+        "02n" => "partly-cloudy-night.svg",
+        "03d" | "03n" => "cloudy.svg",
+        "04d" | "04n" => "overcast-day.svg",
+        "09d" | "09n" => "rain.svg",
+        "10d" => "overcast-day-rain.svg",
+        "10n" => "overcast-night-rain.svg",
+        "11d" => "thunderstorms-day.svg",
+        "11n" => "thunderstorms-night.svg",
+        "13d" => "snow.svg",
+        "13n" => "snow.svg",
+        "50d" | "50n" => "fog.svg",
+        _ => "cloudy.svg", // default fallback
+    }
+}
+
+/// Loads an SVG icon and returns its content as a base64-encoded data URI
+fn load_weather_icon_as_data_uri(icon_code: &str) -> Result<String, std::io::Error> {
+    let icon_filename = map_weather_icon(icon_code);
+    let icon_path = format!("assets/static/fill-svg-static/{}", icon_filename);
+    let svg_content = fs::read(&icon_path)?;
+
+    // Encode as base64 data URI for embedding in SVG
+    let encoded = general_purpose::STANDARD.encode(&svg_content);
+    Ok(format!("data:image/svg+xml;base64,{}", encoded))
 }
 
 fn temperature_text(temp: f32) -> &'static str {
@@ -146,8 +180,18 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
     ));
     svg.push('\n');
 
-    // Weather condition
+    // Weather icon (large, centered in left section)
     if let Some(w) = today.weather.first() {
+        // Embed weather icon as a data URI
+        if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
+            svg.push_str(&format!(
+                r#"  <image x="250" y="80" width="180" height="180" href="{}"/>"#,
+                data_uri
+            ));
+            svg.push('\n');
+        }
+
+        // Weather condition text
         svg.push_str(&format!(
             r#"  <text x="20" y="70" font-family="Arial" font-size="24" fill="black">{}</text>"#,
             w.main
@@ -296,8 +340,17 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
         ));
         svg.push('\n');
 
-        // Weather condition
+        // Weather icon (small) and condition
         if let Some(w) = day.weather.first() {
+            // Embed small weather icon as a data URI
+            if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
+                svg.push_str(&format!(
+                    r#"  <image x="{}" y="{}" width="50" height="50" href="{}"/>"#,
+                    right_x + 150.0, y, data_uri
+                ));
+                svg.push('\n');
+            }
+
             svg.push_str(&format!(
                 r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="black">{}</text>"#,
                 right_x, y + 45.0, w.main

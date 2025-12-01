@@ -1,0 +1,50 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+>
+  <!-- We have three separate paths, each using the same stroke style -->
+  <path
+    fill="none"
+    stroke="#6f6fe8"
+    stroke-linecap="round"
+    stroke-miterlimit="10"
+    stroke-width="20"
+    d="M267.2 24.3A40 40 0 11296 92H132"
+    transform="translate(0 70)"
+  />
+  <path
+    fill="none"
+    stroke="#6f6fe8"
+    stroke-linecap="round"
+    stroke-miterlimit="10"
+    stroke-width="20"
+    d="M267.2 24.3A40 40 0 11296 92H12"
+    transform="translate(120 120)"
+  />
+  <path
+    fill="none"
+    stroke="#6f6fe8"
+    stroke-linecap="round"
+    stroke-miterlimit="10"
+    stroke-width="20"
+    d="M267.2 24.3A40 40 0 11296 92H62"
+    transform="translate(70 350) scale(1, -1)"
+  />
+
+  <!-- Text "km/h" -->
+  <!-- <text
+    x="290"
+    y="452"
+    fill="black"
+    font-size="106.667px"
+    font-weight="bold"
+    font-family="Roboto"
+    text-anchor="middle"
+    stroke="white"
+    stroke-width="15"
+    paint-order="stroke"
+  >
+    km/h
+  </text> -->
+</svg>

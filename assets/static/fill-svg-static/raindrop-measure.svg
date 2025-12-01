@@ -1,0 +1,64 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+>
+  <defs>
+    <!-- Clip path stays the same -->
+    <clipPath id="d">
+      <path fill="none" d="M168 252h176v128H168Z" />
+    </clipPath>
+
+    <!-- Symbol #e: previously gradient-filled, now solid blue fill + black stroke -->
+    <symbol id="e" viewBox="0 0 164 245.6">
+      <path
+        fill="blue"
+        stroke="black"
+        stroke-miterlimit="10"
+        stroke-width="4"
+        d="M82 3.6
+           c-48.7 72-80 117-80 160.7
+           s35.8 79.3 80 79.3
+           80-35.5 80-79.3
+           S130.7 75.5 82 3.6Z"
+      />
+    </symbol>
+  </defs>
+
+  <!-- First path: was gradient fill + light stroke, now white fill + black stroke -->
+  <path
+    fill="white"
+    stroke="black"
+    stroke-miterlimit="10"
+    stroke-width="4"
+    d="M256 132
+       c-48.7 72-80 117-80 160.8
+       s35.8 79.2 80 79.2
+       80-35.5 80-79.3
+       S304.7 204 256 132Z"
+  />
+
+  <!-- Second path: was gradient stroke, now solid black stroke -->
+  <path
+    fill="none"
+    stroke="black"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="6"
+    d="M352 132h32v240h-32
+       m8-120h24
+       m-16 56h16
+       m-16-120h16"
+  />
+
+  <!-- Group with clipping -->
+  <g clip-path="url(#d)">
+    <!-- Symbol #e usage (previously gradient-filled), now solid blue + black stroke -->
+    <use
+      xlink:href="#e"
+      width="164"
+      height="245.6"
+      transform="translate(174.11 128.99)"
+    />
+  </g>
+</svg>

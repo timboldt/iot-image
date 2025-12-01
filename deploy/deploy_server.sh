@@ -40,6 +40,9 @@ scp -r "${BUNDLE_DIR}"/* "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
 
 echo "  Copying server binary..."
 scp "${SERVER_BINARY}" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/iot-image-server"
+
+echo "  Copying assets directory..."
+scp -r "${PROJECT_ROOT}/assets" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
 echo "  Files copied successfully"
 echo
 

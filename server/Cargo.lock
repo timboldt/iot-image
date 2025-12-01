@@ -1061,6 +1061,7 @@ name = "iot-image-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "clap",
  "image 0.25.9",

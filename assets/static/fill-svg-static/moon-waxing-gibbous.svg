@@ -1,0 +1,33 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+>
+  <!-- First path: was stroke="#e5e7eb", now black -->
+  <path
+    fill="none"
+    stroke="blue"
+    stroke-dasharray="16.9 56.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="17.4"
+    d="M384 256a128 128 0 00-128-128
+       c-169.8 6.7-169.7 249.3 0 256
+       a128 128 0 00128-128Z"
+  />
+
+  <!-- Second path: was gradient fill + light-blue stroke, now solid blue fill + black stroke -->
+  <path
+    fill="blue"
+    stroke="black"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="6"
+    d="M391.4 214.8
+       a134.1 134.1 0 00-155.6-95.1
+       135.2 135.2 0 0113.8 31.9
+       c20.7 73.2-22 151-95.4 173.8
+       a145.4 145.4 0 01-14.8 3.6
+       c31 52.5 94.7 78.7 156.6 59.6
+       a142.6 142.6 0 0095.4-173.8Z"
+  />
+</svg>

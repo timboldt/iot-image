@@ -33,6 +33,14 @@ echo "Installing binary..."
 cp "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
+# Copy assets
+if [ -d "assets" ]; then
+    echo "Installing assets..."
+    cp -r assets "${INSTALL_DIR}/"
+else
+    echo "WARNING: Assets directory not found. Weather icons may not display correctly."
+fi
+
 # Check for environment file
 if [ ! -f "${INSTALL_DIR}/env.txt" ]; then
     echo "WARNING: Environment file not found at ${INSTALL_DIR}/env.txt"

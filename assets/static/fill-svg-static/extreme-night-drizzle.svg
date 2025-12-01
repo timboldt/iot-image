@@ -1,0 +1,145 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+>
+  <defs>
+    <linearGradient
+      id="cloudGradient"
+      x1="0"
+      y1="0"
+      x2="0"
+      y2="1"
+      gradientUnits="objectBoundingBox"
+    >
+      <stop offset="0" stop-color="white" />
+      <stop offset=".9" stop-color="#6b7280" />
+      <stop offset="1" stop-color="#4b5563" />
+    </linearGradient>
+    <!-- Symbol #h (was a gradient-filled shape) -->
+    <symbol id="h" viewBox="0 0 172 172">
+      <path
+        fill="blue"
+        stroke="black"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="4"
+        d="M160.6 107.4
+           a84.8 84.8 0 01-85.4-84.3
+           A83.3 83.3 0 0178 2
+           A84.7 84.7 0 002 85.7
+           A84.8 84.8 0 0087.4 170
+           a85.2 85.2 0 0082.6-63.1
+           a88 88 0 01-9.4.5Z"
+      />
+    </symbol>
+
+    <!-- Symbol #j (smaller cloud), was gradient-filled -->
+    <symbol id="j" viewBox="0 0 210.3 126.1">
+      <path
+        fill="url(#cloudGradient)"
+        stroke="black"
+        stroke-miterlimit="10"
+        stroke-width="6"
+        d="M.5 93.2
+           a32.4 32.4 0 0032.4 32.4
+           h129.8v-.1l2.3.1
+           a34.8 34.8 0 006.5-68.9
+           32.4 32.4 0 00-48.5-33
+           48.6 48.6 0 00-88.6 37.1
+           h-1.5A32.4 32.4 0 00.5 93.1Z"
+      />
+    </symbol>
+
+    <!-- Symbol #k (bigger cloud), was gradient-filled -->
+    <symbol id="k" viewBox="0 0 350 223">
+      <path
+        fill="url(#cloudGradient)"
+        stroke="black"
+        stroke-miterlimit="10"
+        stroke-width="6"
+        d="m291 107-2.5.1
+           A83.9 83.9 0 00135.6 43
+           A56 56 0 0051 91
+           a56.6 56.6 0 00.8 9
+           A60 60 0 0063 219
+           l4-.2v.2h224
+           a56 56 0 000-112Z"
+      />
+    </symbol>
+
+    <!-- Symbol #i combines the smaller and bigger clouds -->
+    <symbol id="i" viewBox="0 0 398 222">
+      <use
+        xlink:href="#j"
+        width="200.3"
+        height="126.1"
+        transform="translate(198 27)"
+      />
+      <use
+        xlink:href="#k"
+        width="350"
+        height="222"
+      />
+    </symbol>
+
+    <!-- Symbol #g combines #h (blue shape) + #i (clouds) -->
+    <symbol id="g" viewBox="0 0 398.8 246">
+      <!-- Blue shape (formerly gradient) -->
+      <use
+        xlink:href="#h"
+        width="172"
+        height="172"
+      />
+      <!-- Clouds, shifted down 24px -->
+      <use
+        xlink:href="#i"
+        width="398"
+        height="222"
+        transform="translate(.84 24)"
+      />
+    </symbol>
+
+    <!-- Symbol #l (three small shapes), was gradient-filled -->
+    <symbol id="l" viewBox="0 0 129 109">
+
+      <path
+        fill="blue"
+        d="M8.5 58.5
+           a8 8 0 01-8-8v-12
+           a8 8 0 0116 0v12
+           a8 8 0 01-8 8Z"
+      />
+      <path
+        fill="blue"
+        d="M64.5 88.5
+           a8 8 0 01-8-8v-12
+           a8 8 0 0116 0v12
+           a8 8 0 01-8 8Z"
+      />
+      <path
+        fill="blue"
+        d="M120.5 68.5
+           a8 8 0 01-8-8v-12
+           a8 8 0 0116 0v12
+           a8 8 0 01-8 8Z"
+      />
+    </symbol>
+  </defs>
+
+  <!-- Use #g (combined clouds + blue shape), same position as original -->
+  <use
+    xlink:href="#g"
+    width="398.8"
+    height="246"
+    transform="translate(68 121)"
+  />
+
+  <!-- Use #l (three shapes), same position as original -->
+  <use
+    xlink:href="#l"
+    width="129"
+    height="109"
+    transform="translate(191.5 347.5)"
+  />
+</svg>
