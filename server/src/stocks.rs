@@ -126,7 +126,7 @@ pub async fn fetch_stocks(api_key: &str) -> Result<StocksData, Box<dyn std::erro
     Ok(StocksData { stocks })
 }
 
-pub fn generate_stocks_svg(stocks: &StocksData) -> String {
+pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> String {
     let width = 800;
     let height = 480;
     let mut svg = String::new();
@@ -142,14 +142,14 @@ pub fn generate_stocks_svg(stocks: &StocksData) -> String {
         width, height
     ));
 
-    // Create 2x2 grid of charts
+    // Create 2x2 grid of charts (leaving room for footer)
     let chart_width = 380;
-    let chart_height = 200;
+    let chart_height = 215;
     let positions = [
         (10, 10),   // Top-left
         (410, 10),  // Top-right
-        (10, 230),  // Bottom-left
-        (410, 230), // Bottom-right
+        (10, 235),  // Bottom-left
+        (410, 235), // Bottom-right
     ];
 
     for (i, stock) in stocks.stocks.iter().enumerate() {
@@ -158,6 +158,41 @@ pub fn generate_stocks_svg(stocks: &StocksData) -> String {
         }
         let (x, y) = positions[i];
         svg.push_str(&generate_chart_svg(stock, x, y, chart_width, chart_height));
+    }
+
+    // Footer with last updated and battery percentage
+    let footer_y = height - 10;
+
+    // Last updated timestamp (PST/PDT)
+    use chrono::{Local, Timelike};
+    let now = Local::now();
+    let timestamp = format!(
+        "Last updated: {:02}:{:02}:{:02}",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    svg.push_str(&format!(
+        r#"<text x="10" y="{}" font-size="12" fill="black">{}</text>"#,
+        footer_y, timestamp
+    ));
+
+    // Battery percentage (if provided)
+    if let Some(pct) = battery_pct {
+        let battery_color = if pct > 50 {
+            "green"
+        } else if pct > 20 {
+            "blue"
+        } else {
+            "red"
+        };
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="{}">Battery: {}%</text>"#,
+            width - 10,
+            footer_y,
+            battery_color,
+            pct
+        ));
     }
 
     svg.push_str("</svg>");

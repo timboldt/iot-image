@@ -2,8 +2,14 @@ mod bitmap;
 mod stocks;
 mod weather;
 
-use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use axum::{
+    extract::{Query, State},
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use clap::Parser;
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -39,6 +45,11 @@ struct AppState {
     lon: String,
     api_key: String,
     stocks_api_key: String,
+}
+
+#[derive(Deserialize)]
+struct StocksQuery {
+    battery_pct: Option<u8>,
 }
 
 async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -77,11 +88,14 @@ async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ([("Content-Type", "application/octet-stream")], bytes)
 }
 
-async fn get_stocks_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_stocks_bitmap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StocksQuery>,
+) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
     let bitmap = match fetch_stocks(&state.stocks_api_key).await {
         Ok(stocks) => {
-            let svg_content = generate_stocks_svg(&stocks);
+            let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
 
             // Write SVG to temporary file
             let temp_svg_path = "/tmp/stocks.svg";
@@ -132,11 +146,14 @@ async fn get_weather_svg(State(state): State<Arc<AppState>>) -> impl IntoRespons
     }
 }
 
-async fn get_stocks_svg(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_stocks_svg(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<StocksQuery>,
+) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
     match fetch_stocks(&state.stocks_api_key).await {
         Ok(stocks) => {
-            let svg_content = generate_stocks_svg(&stocks);
+            let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
         Err(e) => {

@@ -231,6 +231,42 @@ uint16_t map_epbm_color(uint8_t color) {
 }
 
 /**
+ * Get battery percentage from ESP32 ADC
+ * Returns 0-100, or -1 if unavailable
+ */
+int get_battery_percentage() {
+    // Enable battery monitoring circuit
+    pinMode(BATTERY_ENABLE_PIN, OUTPUT);
+    digitalWrite(BATTERY_ENABLE_PIN, HIGH);
+    delay(10);  // Allow voltage to stabilize
+
+    // Read battery voltage from ADC
+    int adc_value = analogRead(BATTERY_ADC_PIN);
+
+    // Disable battery monitoring to save power
+    digitalWrite(BATTERY_ENABLE_PIN, LOW);
+
+    // Convert ADC reading to voltage (ESP32 ADC is 12-bit, 0-4095)
+    // Voltage divider: Vbat -> R1(10k) -> ADC -> R2(10k) -> GND
+    // ADC sees Vbat/2, then multiply by 2
+    float voltage = (adc_value / 4095.0) * 3.3 * 2.0;
+
+    // Convert voltage to percentage
+    // LiPo battery: 4.2V = 100%, 3.0V = 0%
+    float min_voltage = 3.0;
+    float max_voltage = 4.2;
+    int percentage = ((voltage - min_voltage) / (max_voltage - min_voltage)) * 100;
+
+    // Clamp to 0-100
+    if (percentage > 100) percentage = 100;
+    if (percentage < 0) percentage = 0;
+
+    Serial.printf("[Battery] ADC: %d, Voltage: %.2fV, Percentage: %d%%\n",
+                  adc_value, voltage, percentage);
+    return percentage;
+}
+
+/**
  * Download and render raw bitmap image using streaming (no full buffer)
  * Format: EPBM header (8 bytes) + pixel data (1 byte per pixel)
  * This streams the image directly to the display to avoid running out of memory
@@ -252,6 +288,12 @@ void download_and_render_image() {
     HTTPClient http;
     String url =
         String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/" + endpoint;
+
+    // Add battery percentage query parameter.
+    int battery_pct = get_battery_percentage();
+    if (battery_pct >= 0) {
+        url += "?battery_pct=" + String(battery_pct);
+    }
 
     Serial.printf("[Stream] Mode: %s\n",
                   current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
