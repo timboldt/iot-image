@@ -45,15 +45,18 @@ struct AppState {
 }
 
 #[derive(Deserialize)]
-struct StocksQuery {
+struct QueryArgs {
     battery_pct: Option<u8>,
 }
 
-async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_weather_bitmap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
     // Fetch weather data and generate SVG
     let bitmap = match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct);
 
             // Write SVG to temporary file
             let temp_svg_path = "/tmp/weather.svg";
@@ -87,7 +90,7 @@ async fn get_bitmap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn get_stocks_bitmap(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StocksQuery>,
+    Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
     let bitmap = match fetch_stocks(&state.stocks_api_key).await {
@@ -124,11 +127,14 @@ async fn get_stocks_bitmap(
     ([("Content-Type", "application/octet-stream")], bytes)
 }
 
-async fn get_weather_svg(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_weather_svg(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
     // Fetch weather data and generate SVG
     match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
         Err(e) => {
@@ -145,7 +151,7 @@ async fn get_weather_svg(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 async fn get_stocks_svg(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<StocksQuery>,
+    Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
     match fetch_stocks(&state.stocks_api_key).await {
@@ -188,7 +194,7 @@ async fn main() {
     });
 
     let app = Router::new()
-        .route("/weather/seed-e1002.bin", get(get_bitmap))
+        .route("/weather/seed-e1002.bin", get(get_weather_bitmap))
         .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
         .route("/weather/svg", get(get_weather_svg))
         .route("/stocks/svg", get(get_stocks_svg))

@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose, Engine as _};
 use chrono::prelude::*;
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -79,43 +80,106 @@ fn load_weather_icon_as_data_uri(icon_code: &str) -> Result<String, std::io::Err
     Ok(format!("data:image/svg+xml;base64,{}", encoded))
 }
 
-fn temperature_text(temp: f32) -> &'static str {
+struct QualitativeText {
+    text: &'static str,
+    fg_color: &'static str,
+    bg_color: &'static str,
+}
+
+fn temperature_text(temp: f32) -> QualitativeText {
     if temp < 30.0 {
-        "Frz"
+        QualitativeText {
+            text: "Freezing",
+            fg_color: "white",
+            bg_color: "blue",
+        }
     } else if temp < 50.0 {
-        "Cold"
+        QualitativeText {
+            text: "Cold",
+            fg_color: "blue",
+            bg_color: "white",
+        }
     } else if temp < 70.0 {
-        "Cool"
+        QualitativeText {
+            text: "Cool",
+            fg_color: "black",
+            bg_color: "white",
+        }
     } else if temp < 80.0 {
-        "Mild"
+        QualitativeText {
+            text: "Mild",
+            fg_color: "green",
+            bg_color: "white",
+        }
     } else if temp < 90.0 {
-        "Warm"
+        QualitativeText {
+            text: "Warm",
+            fg_color: "red",
+            bg_color: "white",
+        }
     } else {
-        "Hot"
+        QualitativeText {
+            text: "Hot",
+            fg_color: "white",
+            bg_color: "red",
+        }
     }
 }
 
-fn humidity_text(humidity: i32, temp: f32) -> &'static str {
+fn humidity_text(humidity: i32, temp: f32) -> QualitativeText {
     if humidity < 20 {
-        "Dry"
+        QualitativeText {
+            text: "Dry",
+            fg_color: "red",
+            bg_color: "white",
+        }
     } else if humidity < 60 {
-        "Norm"
+        QualitativeText {
+            text: "Normal",
+            fg_color: "black",
+            bg_color: "white",
+        }
     } else if temp >= 70.0 {
-        "Hum"
+        // High humidity + warm = uncomfortable
+        QualitativeText {
+            text: "Humid",
+            fg_color: "white",
+            bg_color: "red",
+        }
     } else {
-        "Norm"
+        QualitativeText {
+            text: "Normal",
+            fg_color: "black",
+            bg_color: "white",
+        }
     }
 }
 
-fn wind_text(wind_speed: f32) -> &'static str {
+fn wind_text(wind_speed: f32) -> QualitativeText {
     if wind_speed < 5.0 {
-        "Calm"
+        QualitativeText {
+            text: "Calm",
+            fg_color: "green",
+            bg_color: "white",
+        }
     } else if wind_speed < 15.0 {
-        "Brzy"
+        QualitativeText {
+            text: "Breezy",
+            fg_color: "black",
+            bg_color: "white",
+        }
     } else if wind_speed < 30.0 {
-        "Windy"
+        QualitativeText {
+            text: "Windy",
+            fg_color: "red",
+            bg_color: "white",
+        }
     } else {
-        "Storm"
+        QualitativeText {
+            text: "Storm",
+            fg_color: "white",
+            bg_color: "red",
+        }
     }
 }
 
@@ -149,10 +213,11 @@ pub async fn fetch_weather(
 ///
 /// # Arguments
 /// * `weather` - The weather data to display
+/// * `battery_pct` - Optional battery percentage to display
 ///
 /// # Returns
 /// A String containing the SVG markup
-pub fn generate_weather_svg(weather: &WeatherData) -> String {
+pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> String {
     // Create timezone offset from the weather data
     let tz_offset = chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap();
 
@@ -185,18 +250,11 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
         // Embed weather icon as a data URI
         if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
             svg.push_str(&format!(
-                r#"  <image x="250" y="80" width="180" height="180" href="{}"/>"#,
+                r#"  <image x="350" y="0" width="100" height="100" href="{}"/>"#,
                 data_uri
             ));
             svg.push('\n');
         }
-
-        // Weather condition text
-        svg.push_str(&format!(
-            r#"  <text x="20" y="70" font-family="Arial" font-size="24" fill="black">{}</text>"#,
-            w.main
-        ));
-        svg.push('\n');
     }
 
     // Morning/Day/Night temperatures in a row
@@ -205,73 +263,105 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
 
     // Morning
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="18" fill="gray">Morning</text>"#,
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="18" fill="black">Morning</text>"#,
         temp_y - 10.0
     ));
     svg.push('\n');
+
+    let morn_qual = temperature_text(today.temp.morn);
+    // Add background rectangle if not white
+    if morn_qual.bg_color != "white" {
+        svg.push_str(&format!(
+            r#"  <rect x="35" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
+            temp_y + 5.0,
+            morn_qual.bg_color
+        ));
+        svg.push('\n');
+    }
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
-        temp_y + 25.0, today.temp.morn
-    ));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
-        temp_y + 48.0,
-        temperature_text(today.temp.morn)
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
+        temp_y + 28.0, morn_qual.fg_color, morn_qual.text
     ));
     svg.push('\n');
 
     // Day
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="gray">Day</text>"#,
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="black">Day</text>"#,
         40.0 + temp_spacing,
         temp_y - 10.0
     ));
     svg.push('\n');
+
+    let day_qual = temperature_text(today.temp.day);
+    if day_qual.bg_color != "white" {
+        svg.push_str(&format!(
+            r#"  <rect x="{}" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
+            35.0 + temp_spacing,
+            temp_y + 5.0,
+            day_qual.bg_color
+        ));
+        svg.push('\n');
+    }
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
-        40.0 + temp_spacing, temp_y + 25.0, today.temp.day
-    ));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
-        40.0 + temp_spacing,
-        temp_y + 48.0,
-        temperature_text(today.temp.day)
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
+        40.0 + temp_spacing, temp_y + 28.0, day_qual.fg_color, day_qual.text
     ));
     svg.push('\n');
 
     // Night
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="gray">Night</text>"#,
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="black">Night</text>"#,
         40.0 + 2.0 * temp_spacing,
         temp_y - 10.0
     ));
     svg.push('\n');
+
+    let night_qual = temperature_text(today.temp.night);
+    if night_qual.bg_color != "white" {
+        svg.push_str(&format!(
+            r#"  <rect x="{}" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
+            35.0 + 2.0 * temp_spacing,
+            temp_y + 5.0,
+            night_qual.bg_color
+        ));
+        svg.push('\n');
+    }
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="32" font-weight="bold" fill="black">{:.0}°</text>"#,
-        40.0 + 2.0 * temp_spacing, temp_y + 25.0, today.temp.night
-    ));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="gray">{}</text>"#,
-        40.0 + 2.0 * temp_spacing,
-        temp_y + 48.0,
-        temperature_text(today.temp.night)
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
+        40.0 + 2.0 * temp_spacing, temp_y + 28.0, night_qual.fg_color, night_qual.text
     ));
     svg.push('\n');
 
     // Humidity and Wind in a row
     let detail_y = 280.0;
+
+    let hum_qual = humidity_text(today.humidity, today.temp.day);
+    if hum_qual.bg_color != "white" {
+        svg.push_str(&format!(
+            r#"  <rect x="150" y="{}" width="50" height="24" fill="{}" rx="4"/>"#,
+            detail_y - 18.0,
+            hum_qual.bg_color
+        ));
+        svg.push('\n');
+    }
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity: {}% ({})</text>"#,
-        detail_y, today.humidity, humidity_text(today.humidity, today.temp.day)
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity: <tspan font-weight="bold" fill="{}">{}</tspan></text>"#,
+        detail_y, hum_qual.fg_color, hum_qual.text
     ));
     svg.push('\n');
 
+    let wind_qual = wind_text(today.wind_speed);
+    if wind_qual.bg_color != "white" {
+        svg.push_str(&format!(
+            r#"  <rect x="90" y="{}" width="80" height="28" fill="{}" rx="4"/>"#,
+            detail_y + 12.0,
+            wind_qual.bg_color
+        ));
+        svg.push('\n');
+    }
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind: {:.0} mph ({})</text>"#,
-        detail_y + 35.0, today.wind_speed, wind_text(today.wind_speed)
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind: <tspan font-weight="bold" fill="{}">{}</tspan></text>"#,
+        detail_y + 35.0, wind_qual.fg_color, wind_qual.text
     ));
     svg.push('\n');
 
@@ -322,59 +412,88 @@ pub fn generate_weather_svg(weather: &WeatherData) -> String {
             .timestamp_opt(day.dt, 0)
             .unwrap()
             .with_timezone(&tz_offset);
-        let day_name =
-            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][day_time.weekday() as usize];
+        let day_name = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ][day_time.weekday() as usize];
 
         // Day name and date
         svg.push_str(&format!(
-            r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" font-weight="bold" fill="black">{}</text>"#,
+            r#"  <text x="{}" y="{}" font-family="Arial" font-size="22" font-weight="bold" fill="black">{}</text>"#,
             right_x, y + 5.0, day_name
         ));
         svg.push('\n');
 
-        svg.push_str(&format!(
-            r#"  <text x="{}" y="{}" font-family="Arial" font-size="14" fill="gray">{}</text>"#,
-            right_x,
-            y + 25.0,
-            day_time.format("%m/%d")
-        ));
-        svg.push('\n');
-
-        // Weather icon (small) and condition
+        // Weather icon (small)
         if let Some(w) = day.weather.first() {
             // Embed small weather icon as a data URI
             if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
                 svg.push_str(&format!(
-                    r#"  <image x="{}" y="{}" width="50" height="50" href="{}"/>"#,
-                    right_x + 150.0, y, data_uri
+                    r#"  <image x="{}" y="{}" width="100" height="100" href="{}"/>"#,
+                    right_x + 150.0,
+                    y - 40.0,
+                    data_uri
                 ));
                 svg.push('\n');
             }
+        }
 
+        // Temperature qualitative indicator
+        let temp_qual = temperature_text(day.temp.day);
+        if temp_qual.bg_color != "white" {
             svg.push_str(&format!(
-                r#"  <text x="{}" y="{}" font-family="Arial" font-size="16" fill="black">{}</text>"#,
-                right_x, y + 45.0, w.main
+                r#"  <rect x="{}" y="{}" width="60" height="28" fill="{}" rx="4"/>"#,
+                right_x - 5.0,
+                y + 25.0,
+                temp_qual.bg_color
             ));
             svg.push('\n');
         }
-
-        // Temperature
         svg.push_str(&format!(
-            r#"  <text x="{}" y="{}" font-family="Arial" font-size="20" font-weight="bold" fill="black">{:.0}° ({})</text>"#,
-            right_x, y + 68.0, day.temp.day, temperature_text(day.temp.day)
+            r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" font-weight="bold" fill="{}">{}</text>"#,
+            right_x, y + 47.0, temp_qual.fg_color, temp_qual.text
         ));
         svg.push('\n');
+    }
 
-        // Separator line (except for last item)
-        if idx < 4 {
-            svg.push_str(&format!(
-                r#"  <line x1="{}" y1="{}" x2="780" y2="{}" stroke="lightgray" stroke-width="1"/>"#,
-                right_x,
-                y + row_height - 5.0,
-                y + row_height - 5.0
-            ));
-            svg.push('\n');
-        }
+    // Footer with last updated and battery percentage
+    let footer_y = 470;
+
+    // Last updated timestamp
+    let now = Local::now();
+    let timestamp = format!(
+        "Last updated: {:02}:{:02}:{:02}",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    svg.push_str(&format!(
+        r#"  <text x="10" y="{}" font-size="12" fill="black">{}</text>"#,
+        footer_y, timestamp
+    ));
+    svg.push('\n');
+
+    // Battery percentage (if provided)
+    if let Some(pct) = battery_pct {
+        let battery_color = if pct > 50 {
+            "green"
+        } else if pct > 20 {
+            "blue"
+        } else {
+            "red"
+        };
+        svg.push_str(&format!(
+            r#"  <text x="790" y="{}" text-anchor="end" font-size="12" fill="{}">Battery: {}%</text>"#,
+            footer_y,
+            battery_color,
+            pct
+        ));
+        svg.push('\n');
     }
 
     svg.push_str("</svg>");
