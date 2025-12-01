@@ -42,7 +42,7 @@ echo "  Copying server binary..."
 scp "${SERVER_BINARY}" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/iot-image-server"
 
 echo "  Copying assets directory..."
-scp -r "${PROJECT_ROOT}/assets" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
+rsync -av "${PROJECT_ROOT}/assets" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
 echo "  Files copied successfully"
 echo
 
