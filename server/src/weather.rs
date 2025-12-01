@@ -405,7 +405,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     let forecast_start_y = 70.0;
     let row_height = 80.0;
 
-    for (idx, day) in weather.daily.iter().take(5).enumerate() {
+    for (idx, day) in weather.daily.iter().skip(1).take(5).enumerate() {
         let y = forecast_start_y + (idx as f32 * row_height);
 
         let day_time = Utc
