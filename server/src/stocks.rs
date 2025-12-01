@@ -142,17 +142,14 @@ pub fn generate_stocks_svg(stocks: &StocksData) -> String {
         width, height
     ));
 
-    // Title
-    svg.push_str(r#"<text x="400" y="30" text-anchor="middle" font-size="24" font-weight="bold" fill="black">Stock Charts</text>"#);
-
     // Create 2x2 grid of charts
     let chart_width = 380;
     let chart_height = 200;
     let positions = [
-        (10, 50),   // Top-left
-        (410, 50),  // Top-right
-        (10, 270),  // Bottom-left
-        (410, 270), // Bottom-right
+        (10, 10),   // Top-left
+        (410, 10),  // Top-right
+        (10, 230),  // Bottom-left
+        (410, 230), // Bottom-right
     ];
 
     for (i, stock) in stocks.stocks.iter().enumerate() {

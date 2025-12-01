@@ -6,3 +6,11 @@ It consists of:
  - A frontend client, which fetches the binary image from the backend and displays it.
 
 The backend is currently written in Rust. The frontend currently uses the Arduino core for the ESP32.
+
+## Examples
+
+### Weather Display
+![Weather Display](assets/weather.svg)
+
+### Stock Charts
+![Stock Charts](assets/stocks.svg)
