@@ -34,9 +34,6 @@ struct Args {
     /// HTTP server port
     #[arg(long, default_value = "8080")]
     port: u16,
-    /// Enable HTTP server mode
-    #[arg(long, default_value = "false")]
-    serve: bool,
 }
 
 #[derive(Clone)]
@@ -172,57 +169,34 @@ async fn get_stocks_svg(
 async fn main() {
     let args = Args::parse();
 
-    if args.serve {
-        // HTTP server mode
-        println!("\n=== iot-image Server Starting ===");
-        println!("Serving e-ink bitmaps on port {}", args.port);
-        println!(
-            "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg",
-            args.port, args.port, args.port, args.port
-        );
-        println!("Format: Raw e-ink bitmap (EPBM)");
-        println!("Display: 800x480, 7 colors");
-        println!("Weather location: ({}, {})\n", args.lat, args.lon);
+    // HTTP server mode
+    println!("\n=== iot-image Server Starting ===");
+    println!("Serving e-ink bitmaps on port {}", args.port);
+    println!(
+        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg",
+        args.port, args.port, args.port, args.port
+    );
+    println!("Format: Raw e-ink bitmap (EPBM)");
+    println!("Display: 800x480, 7 colors");
+    println!("Weather location: ({}, {})\n", args.lat, args.lon);
 
-        let state = Arc::new(AppState {
-            lat: args.lat.clone(),
-            lon: args.lon.clone(),
-            api_key: args.open_weather_key.clone(),
-            stocks_api_key: args.stocks_api_key.clone(),
-        });
+    let state = Arc::new(AppState {
+        lat: args.lat.clone(),
+        lon: args.lon.clone(),
+        api_key: args.open_weather_key.clone(),
+        stocks_api_key: args.stocks_api_key.clone(),
+    });
 
-        let app = Router::new()
-            .route("/weather/seed-e1002.bin", get(get_bitmap))
-            .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
-            .route("/weather/svg", get(get_weather_svg))
-            .route("/stocks/svg", get(get_stocks_svg))
-            .with_state(state);
-        let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let app = Router::new()
+        .route("/weather/seed-e1002.bin", get(get_bitmap))
+        .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
+        .route("/weather/svg", get(get_weather_svg))
+        .route("/stocks/svg", get(get_stocks_svg))
+        .with_state(state);
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
-        println!("Server listening on http://{}", addr);
+    println!("Server listening on http://{}", addr);
 
-        axum::serve(listener, app).await.unwrap();
-    } else {
-        // Weather data fetching mode (original functionality)
-        match fetch_weather(&args.lat, &args.lon, &args.open_weather_key).await {
-            Ok(weather) => {
-                println!("\n=== Weather Forecast ===");
-                println!("Location: ({:.2}, {:.2})", weather.lat, weather.lon);
-                println!("Timezone offset: {} seconds\n", weather.timezone_offset);
-
-                let svg_content = generate_weather_svg(&weather);
-
-                let output_path = "weather.svg";
-                match std::fs::write(output_path, svg_content) {
-                    Ok(_) => println!("Weather SVG generated: {}", output_path),
-                    Err(e) => eprintln!("Failed to write SVG file: {}", e),
-                }
-            }
-            Err(e) => {
-                eprintln!("Could not fetch weather data: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
+    axum::serve(listener, app).await.unwrap();
 }
