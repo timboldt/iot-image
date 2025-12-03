@@ -94,7 +94,7 @@ fn temperature_bar(temp: f32) -> BarData {
     } else if temp < 50.0 {
         "rgb(128,128,255)" // Cold (will dither blue+white for light blue)
     } else if temp < 60.0 {
-        "rgb(128,255,128)" // Cool (will dither green+white for light green)
+        "rgb(0,200,128)" // Cool (cyan-green, will dither green+blue)
     } else if temp < 70.0 {
         "green" // Comfortable
     } else if temp < 80.0 {
@@ -120,7 +120,7 @@ fn humidity_bar(humidity: i32, temp: f32) -> BarData {
     } else if humidity < 35 {
         "yellow" // Dry
     } else if humidity < 50 {
-        "rgb(128,255,128)" // Comfortable-dry (will dither green+white)
+        "rgb(0,200,128)" // Comfortable-dry (cyan-green, will dither green+blue)
     } else if humidity < 65 {
         "green" // Comfortable
     } else if temp >= 75.0 {
@@ -152,7 +152,7 @@ fn wind_bar(wind_speed: f32) -> BarData {
     let bar_color = if wind_speed < 3.0 {
         "green" // Calm
     } else if wind_speed < 8.0 {
-        "rgb(128,255,128)" // Light breeze (will dither green+white)
+        "rgb(0,200,128)" // Light breeze (cyan-green, will dither green+blue)
     } else if wind_speed < 12.0 {
         "rgb(128,128,255)" // Gentle breeze (will dither blue+white for light blue)
     } else if wind_speed < 18.0 {
@@ -259,21 +259,23 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     let morn_bar = temperature_bar(today.temp.morn);
     let bar_width = 100.0;
     let bar_height = 20.0;
-    let fill_width = bar_width * (morn_bar.fill_percent / 100.0);
+    let bar_inset = 2.0; // Inset to avoid covering border
+    let fill_width = (bar_width - bar_inset * 2.0) * (morn_bar.fill_percent / 100.0);
 
     // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
         temp_y + 5.0, bar_width, bar_height
     ));
     svg.push('\n');
 
-    // Filled portion
+    // Filled portion (inset to not cover border)
     svg.push_str(&format!(
-        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-        temp_y + 5.0,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        35.0 + bar_inset,
+        temp_y + 5.0 + bar_inset,
         fill_width,
-        bar_height,
+        bar_height - bar_inset * 2.0,
         morn_bar.bar_color
     ));
     svg.push('\n');
@@ -287,22 +289,22 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push('\n');
 
     let day_bar = temperature_bar(today.temp.day);
-    let fill_width = bar_width * (day_bar.fill_percent / 100.0);
+    let fill_width = (bar_width - bar_inset * 2.0) * (day_bar.fill_percent / 100.0);
 
     // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
         35.0 + temp_spacing, temp_y + 5.0, bar_width, bar_height
     ));
     svg.push('\n');
 
-    // Filled portion
+    // Filled portion (inset to not cover border)
     svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-        35.0 + temp_spacing,
-        temp_y + 5.0,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        35.0 + temp_spacing + bar_inset,
+        temp_y + 5.0 + bar_inset,
         fill_width,
-        bar_height,
+        bar_height - bar_inset * 2.0,
         day_bar.bar_color
     ));
     svg.push('\n');
@@ -316,22 +318,22 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push('\n');
 
     let night_bar = temperature_bar(today.temp.night);
-    let fill_width = bar_width * (night_bar.fill_percent / 100.0);
+    let fill_width = (bar_width - bar_inset * 2.0) * (night_bar.fill_percent / 100.0);
 
     // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
         35.0 + 2.0 * temp_spacing, temp_y + 5.0, bar_width, bar_height
     ));
     svg.push('\n');
 
-    // Filled portion
+    // Filled portion (inset to not cover border)
     svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-        35.0 + 2.0 * temp_spacing,
-        temp_y + 5.0,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        35.0 + 2.0 * temp_spacing + bar_inset,
+        temp_y + 5.0 + bar_inset,
         fill_width,
-        bar_height,
+        bar_height - bar_inset * 2.0,
         night_bar.bar_color
     ));
     svg.push('\n');
@@ -347,21 +349,22 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
 
     let hum_bar = humidity_bar(today.humidity, today.temp.day);
     let hum_bar_width = 150.0;
-    let hum_fill_width = hum_bar_width * (hum_bar.fill_percent / 100.0);
+    let hum_fill_width = (hum_bar_width - bar_inset * 2.0) * (hum_bar.fill_percent / 100.0);
 
     // Background rectangle
     svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
         detail_y - 15.0, hum_bar_width, bar_height
     ));
     svg.push('\n');
 
-    // Filled portion
+    // Filled portion (inset to not cover border)
     svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-        detail_y - 15.0,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y - 15.0 + bar_inset,
         hum_fill_width,
-        bar_height,
+        bar_height - bar_inset * 2.0,
         hum_bar.bar_color
     ));
     svg.push('\n');
@@ -373,21 +376,22 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push('\n');
 
     let wind_bar = wind_bar(today.wind_speed);
-    let wind_fill_width = hum_bar_width * (wind_bar.fill_percent / 100.0);
+    let wind_fill_width = (hum_bar_width - bar_inset * 2.0) * (wind_bar.fill_percent / 100.0);
 
     // Background rectangle
     svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
         detail_y + 20.0, hum_bar_width, bar_height
     ));
     svg.push('\n');
 
-    // Filled portion
+    // Filled portion (inset to not cover border)
     svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-        detail_y + 20.0,
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 20.0 + bar_inset,
         wind_fill_width,
-        bar_height,
+        bar_height - bar_inset * 2.0,
         wind_bar.bar_color
     ));
     svg.push('\n');
@@ -474,22 +478,24 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
         let temp_bar = temperature_bar(day.temp.day);
         let forecast_bar_width = 120.0;
         let forecast_bar_height = 16.0;
-        let forecast_fill_width = forecast_bar_width * (temp_bar.fill_percent / 100.0);
+        let forecast_inset = 2.0;
+        let forecast_fill_width =
+            (forecast_bar_width - forecast_inset * 2.0) * (temp_bar.fill_percent / 100.0);
 
         // Background rectangle
         svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
             right_x, y + 30.0, forecast_bar_width, forecast_bar_height
         ));
         svg.push('\n');
 
-        // Filled portion
+        // Filled portion (inset to not cover border)
         svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
-            right_x,
-            y + 30.0,
+            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="1"/>"#,
+            right_x + forecast_inset,
+            y + 30.0 + forecast_inset,
             forecast_fill_width,
-            forecast_bar_height,
+            forecast_bar_height - forecast_inset * 2.0,
             temp_bar.bar_color
         ));
         svg.push('\n');

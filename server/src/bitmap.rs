@@ -110,6 +110,18 @@ pub fn generate_weather_bitmap(width: u16, height: u16, _weather_data: &str) -> 
     generate_test_bitmap(width, height)
 }
 
+/// 8x8 Bayer matrix for ordered dithering
+const BAYER_MATRIX_8X8: [[u8; 8]; 8] = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+];
+
 /// Convert e-ink display color to approximate RGB values
 fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     match color {
@@ -122,80 +134,107 @@ fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     }
 }
 
-/// Map RGB color to nearest e-ink display color
-fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
-    // Calculate luminance for black/white determination
-    let luminance = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u8;
+/// Apply ordered dithering to choose between two colors
+/// Returns the better color choice based on Bayer matrix threshold
+fn ordered_dither_color(
+    r: u8,
+    g: u8,
+    b: u8,
+    x: u16,
+    y: u16,
+    color1: EpdColor,
+    color2: EpdColor,
+) -> EpdColor {
+    let (r1, g1, b1) = epd_color_to_rgb(color1);
+    let (r2, g2, b2) = epd_color_to_rgb(color2);
 
-    // Very dark = black
-    if luminance < 32 {
-        return EpdColor::Black;
+    // Calculate how close the input color is to color1 vs color2 for each channel
+    let r_ratio = if r1 == r2 {
+        0.5
+    } else {
+        (r as f32 - r1 as f32) / (r2 as f32 - r1 as f32)
+    };
+    let g_ratio = if g1 == g2 {
+        0.5
+    } else {
+        (g as f32 - g1 as f32) / (g2 as f32 - g1 as f32)
+    };
+    let b_ratio = if b1 == b2 {
+        0.5
+    } else {
+        (b as f32 - b1 as f32) / (b2 as f32 - b1 as f32)
+    };
+
+    // Average the ratios
+    let avg_ratio = ((r_ratio + g_ratio + b_ratio) / 3.0).clamp(0.0, 1.0);
+
+    // Get threshold from Bayer matrix (0-63, normalize to 0.0-1.0)
+    let threshold = BAYER_MATRIX_8X8[(y % 8) as usize][(x % 8) as usize] as f32 / 64.0;
+
+    // Choose color based on whether ratio exceeds threshold
+    if avg_ratio > threshold {
+        color2
+    } else {
+        color1
+    }
+}
+
+/// Map RGB color to nearest e-ink display color with ordered dithering
+fn rgb_to_epd_color_dithered(r: u8, g: u8, b: u8, x: u16, y: u16) -> EpdColor {
+    // Calculate distances to all available colors
+    let colors = [
+        EpdColor::Black,
+        EpdColor::White,
+        EpdColor::Green,
+        EpdColor::Blue,
+        EpdColor::Red,
+        EpdColor::Yellow,
+    ];
+
+    let mut distances: Vec<(EpdColor, f32)> = colors
+        .iter()
+        .map(|&color| {
+            let (cr, cg, cb) = epd_color_to_rgb(color);
+            let dist = ((r as f32 - cr as f32).powi(2)
+                + (g as f32 - cg as f32).powi(2)
+                + (b as f32 - cb as f32).powi(2))
+            .sqrt();
+            (color, dist)
+        })
+        .collect();
+
+    // Sort by distance
+    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    // Get two closest colors
+    let color1 = distances[0].0;
+    let color2 = distances[1].0;
+
+    // If the closest color is very close, just use it without dithering
+    // This keeps borders, text, and near-pure colors crisp
+    // Threshold of 80 is about 18% of max RGB distance (441)
+    if distances[0].1 < 80.0 {
+        return color1;
     }
 
-    // Check for specific color patterns before checking if it's too light
+    // If both colors are reasonably far, skip dithering for very saturated colors
+    // (they should map to a single e-ink color)
     let max_channel = r.max(g).max(b);
     let min_channel = r.min(g).min(b);
     let saturation = if max_channel > 0 {
-        ((max_channel - min_channel) as f32 / max_channel as f32) * 100.0
+        (max_channel - min_channel) as f32 / max_channel as f32
     } else {
         0.0
     };
 
-    // Low saturation means grayscale - use black or white based on luminance
-    if saturation < 20.0 {
-        return if luminance < 128 {
-            EpdColor::Black
-        } else {
-            EpdColor::White
-        };
+    // High saturation (>80%) that's not close to a pure color suggests
+    // we should pick the closest rather than dither
+    if saturation > 0.8 && distances[0].1 < 150.0 {
+        return color1;
     }
 
-    // High saturation - determine which color it is
-    // Check for yellow first (high R and G, low B)
-    if r > 200 && g > 200 && b < 100 {
-        return EpdColor::Yellow;
-    }
-
-    // Check for red (high R, low G and B)
-    if r > 200 && g < 150 && b < 150 {
-        return EpdColor::Red;
-    }
-
-    // Check for green (high G, low R and B)
-    if g > 200 && r < 150 && b < 150 {
-        return EpdColor::Green;
-    }
-
-    // Check for blue (high B, low R and G)
-    if b > 200 && r < 150 && g < 150 {
-        return EpdColor::Blue;
-    }
-
-    // For colors that don't match cleanly, use channel dominance
-    if r >= g && r >= b {
-        // Red dominant
-        if g > b + 50 {
-            EpdColor::Yellow // Red-ish with green = yellow
-        } else {
-            EpdColor::Red
-        }
-    } else if g >= r && g >= b {
-        // Green dominant
-        if r > b + 50 {
-            EpdColor::Yellow // Green-ish with red = yellow
-        } else {
-            EpdColor::Green
-        }
-    } else if b >= r && b >= g {
-        EpdColor::Blue
-    } else {
-        // Fallback based on luminance
-        if luminance < 128 {
-            EpdColor::Black
-        } else {
-            EpdColor::White
-        }
-    }
+    // Use ordered dithering to choose between the two closest colors
+    ordered_dither_color(r, g, b, x, y, color1, color2)
 }
 
 /// Render SVG file to e-ink bitmap
@@ -242,14 +281,11 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
         eprintln!("Warning: Could not save debug PNG: {}", e);
     }
 
-    // Convert pixmap to e-ink bitmap with Floyd-Steinberg dithering
+    // Convert pixmap to e-ink bitmap with ordered dithering
     let mut bitmap = EpdBitmap::new(width, height);
 
     // Track color usage for debugging
     let mut color_counts = std::collections::HashMap::new();
-
-    // Error buffer for Floyd-Steinberg dithering (stores RGB error for each pixel)
-    let mut error_buffer = vec![vec![(0.0f32, 0.0f32, 0.0f32); width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -257,53 +293,11 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
                 .pixel(x as u32, y as u32)
                 .ok_or("Failed to get pixel")?;
 
-            // Get original RGB values and add accumulated error
-            let (err_r, err_g, err_b) = error_buffer[y as usize][x as usize];
-            let r = (pixel.red() as f32 + err_r).clamp(0.0, 255.0) as u8;
-            let g = (pixel.green() as f32 + err_g).clamp(0.0, 255.0) as u8;
-            let b = (pixel.blue() as f32 + err_b).clamp(0.0, 255.0) as u8;
-
-            // Convert to nearest e-ink color
-            let color = rgb_to_epd_color(r, g, b);
+            // Convert to e-ink color with ordered dithering
+            let color = rgb_to_epd_color_dithered(pixel.red(), pixel.green(), pixel.blue(), x, y);
 
             *color_counts.entry(color as u8).or_insert(0) += 1;
             bitmap.set_pixel(x, y, color);
-
-            // Calculate quantization error
-            let actual_rgb = epd_color_to_rgb(color);
-            let error_r = r as f32 - actual_rgb.0 as f32;
-            let error_g = g as f32 - actual_rgb.1 as f32;
-            let error_b = b as f32 - actual_rgb.2 as f32;
-
-            // Distribute error to neighboring pixels (Floyd-Steinberg)
-            // Right: 7/16
-            if x + 1 < width {
-                let e = &mut error_buffer[y as usize][(x + 1) as usize];
-                e.0 += error_r * 7.0 / 16.0;
-                e.1 += error_g * 7.0 / 16.0;
-                e.2 += error_b * 7.0 / 16.0;
-            }
-            // Below-left: 3/16
-            if y + 1 < height && x > 0 {
-                let e = &mut error_buffer[(y + 1) as usize][(x - 1) as usize];
-                e.0 += error_r * 3.0 / 16.0;
-                e.1 += error_g * 3.0 / 16.0;
-                e.2 += error_b * 3.0 / 16.0;
-            }
-            // Below: 5/16
-            if y + 1 < height {
-                let e = &mut error_buffer[(y + 1) as usize][x as usize];
-                e.0 += error_r * 5.0 / 16.0;
-                e.1 += error_g * 5.0 / 16.0;
-                e.2 += error_b * 5.0 / 16.0;
-            }
-            // Below-right: 1/16
-            if y + 1 < height && x + 1 < width {
-                let e = &mut error_buffer[(y + 1) as usize][(x + 1) as usize];
-                e.0 += error_r * 1.0 / 16.0;
-                e.1 += error_g * 1.0 / 16.0;
-                e.2 += error_b * 1.0 / 16.0;
-            }
         }
     }
 
