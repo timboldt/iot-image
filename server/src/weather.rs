@@ -233,12 +233,19 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
+    // Latitude/Longitude
+    svg.push_str(&format!(
+        r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="gray">{:.4}°, {:.4}°</text>"#,
+        weather.lat, weather.lon
+    ));
+    svg.push('\n');
+
     // Weather icon (large, centered in left section)
     if let Some(w) = today.weather.first() {
         // Embed weather icon as a data URI
         if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
             svg.push_str(&format!(
-                r#"  <image x="350" y="0" width="100" height="100" href="{}"/>"#,
+                r#"  <image x="350" y="30" width="100" height="100" href="{}"/>"#,
                 data_uri
             ));
             svg.push('\n');
@@ -467,7 +474,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
                 svg.push_str(&format!(
                     r#"  <image x="{}" y="{}" width="100" height="100" href="{}"/>"#,
                     right_x + 150.0,
-                    y - 40.0,
+                    y - 30.0,
                     data_uri
                 ));
                 svg.push('\n');

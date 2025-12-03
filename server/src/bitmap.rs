@@ -110,18 +110,6 @@ pub fn generate_weather_bitmap(width: u16, height: u16, _weather_data: &str) -> 
     generate_test_bitmap(width, height)
 }
 
-/// 8x8 Bayer matrix for ordered dithering
-const BAYER_MATRIX_8X8: [[u8; 8]; 8] = [
-    [0, 32, 8, 40, 2, 34, 10, 42],
-    [48, 16, 56, 24, 50, 18, 58, 26],
-    [12, 44, 4, 36, 14, 46, 6, 38],
-    [60, 28, 52, 20, 62, 30, 54, 22],
-    [3, 35, 11, 43, 1, 33, 9, 41],
-    [51, 19, 59, 27, 49, 17, 57, 25],
-    [15, 47, 7, 39, 13, 45, 5, 37],
-    [63, 31, 55, 23, 61, 29, 53, 21],
-];
-
 /// Convert e-ink display color to approximate RGB values
 fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     match color {
@@ -134,9 +122,9 @@ fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     }
 }
 
-/// Apply ordered dithering to choose between two colors
-/// Returns the better color choice based on Bayer matrix threshold
-fn ordered_dither_color(
+/// Apply simple checkerboard dithering to choose between two colors
+/// Uses (x + y) % 2 pattern for a clean checkerboard
+fn checkerboard_dither_color(
     r: u8,
     g: u8,
     b: u8,
@@ -168,14 +156,24 @@ fn ordered_dither_color(
     // Average the ratios
     let avg_ratio = ((r_ratio + g_ratio + b_ratio) / 3.0).clamp(0.0, 1.0);
 
-    // Get threshold from Bayer matrix (0-63, normalize to 0.0-1.0)
-    let threshold = BAYER_MATRIX_8X8[(y % 8) as usize][(x % 8) as usize] as f32 / 64.0;
+    // Simple checkerboard pattern: if (x + y) is even, prefer color1, else prefer color2
+    // Adjust threshold based on the ratio to control color mixing
+    let is_even = (x + y) % 2 == 0;
 
-    // Choose color based on whether ratio exceeds threshold
-    if avg_ratio > threshold {
-        color2
+    if is_even {
+        // On even positions, use color1 if ratio < threshold
+        if avg_ratio < 0.5 {
+            color1
+        } else {
+            color2
+        }
     } else {
-        color1
+        // On odd positions, use color2 if ratio > threshold
+        if avg_ratio > 0.5 {
+            color2
+        } else {
+            color1
+        }
     }
 }
 
@@ -210,31 +208,15 @@ fn rgb_to_epd_color_dithered(r: u8, g: u8, b: u8, x: u16, y: u16) -> EpdColor {
     let color1 = distances[0].0;
     let color2 = distances[1].0;
 
-    // If the closest color is very close, just use it without dithering
-    // This keeps borders, text, and near-pure colors crisp
-    // Threshold of 80 is about 18% of max RGB distance (441)
-    if distances[0].1 < 80.0 {
+    // Only skip dithering if the color is VERY close to a pure e-ink color
+    // This keeps pure black, pure white, etc. crisp
+    // Threshold of 20 is about 4.5% of max RGB distance (441)
+    if distances[0].1 < 20.0 {
         return color1;
     }
 
-    // If both colors are reasonably far, skip dithering for very saturated colors
-    // (they should map to a single e-ink color)
-    let max_channel = r.max(g).max(b);
-    let min_channel = r.min(g).min(b);
-    let saturation = if max_channel > 0 {
-        (max_channel - min_channel) as f32 / max_channel as f32
-    } else {
-        0.0
-    };
-
-    // High saturation (>80%) that's not close to a pure color suggests
-    // we should pick the closest rather than dither
-    if saturation > 0.8 && distances[0].1 < 150.0 {
-        return color1;
-    }
-
-    // Use ordered dithering to choose between the two closest colors
-    ordered_dither_color(r, g, b, x, y, color1, color2)
+    // Use checkerboard dithering to choose between the two closest colors
+    checkerboard_dither_color(r, g, b, x, y, color1, color2)
 }
 
 /// Render SVG file to e-ink bitmap
