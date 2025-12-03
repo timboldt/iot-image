@@ -110,6 +110,18 @@ pub fn generate_weather_bitmap(width: u16, height: u16, _weather_data: &str) -> 
     generate_test_bitmap(width, height)
 }
 
+/// Convert e-ink display color to approximate RGB values
+fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
+    match color {
+        EpdColor::Black => (0, 0, 0),
+        EpdColor::White => (255, 255, 255),
+        EpdColor::Green => (0, 255, 0),
+        EpdColor::Blue => (0, 0, 255),
+        EpdColor::Red => (255, 0, 0),
+        EpdColor::Yellow => (255, 255, 0),
+    }
+}
+
 /// Map RGB color to nearest e-ink display color
 fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
     // Calculate luminance for black/white determination
@@ -230,11 +242,14 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
         eprintln!("Warning: Could not save debug PNG: {}", e);
     }
 
-    // Convert pixmap to e-ink bitmap
+    // Convert pixmap to e-ink bitmap with Floyd-Steinberg dithering
     let mut bitmap = EpdBitmap::new(width, height);
 
     // Track color usage for debugging
     let mut color_counts = std::collections::HashMap::new();
+
+    // Error buffer for Floyd-Steinberg dithering (stores RGB error for each pixel)
+    let mut error_buffer = vec![vec![(0.0f32, 0.0f32, 0.0f32); width as usize]; height as usize];
 
     for y in 0..height {
         for x in 0..width {
@@ -242,10 +257,53 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
                 .pixel(x as u32, y as u32)
                 .ok_or("Failed to get pixel")?;
 
-            let color = rgb_to_epd_color(pixel.red(), pixel.green(), pixel.blue());
+            // Get original RGB values and add accumulated error
+            let (err_r, err_g, err_b) = error_buffer[y as usize][x as usize];
+            let r = (pixel.red() as f32 + err_r).clamp(0.0, 255.0) as u8;
+            let g = (pixel.green() as f32 + err_g).clamp(0.0, 255.0) as u8;
+            let b = (pixel.blue() as f32 + err_b).clamp(0.0, 255.0) as u8;
+
+            // Convert to nearest e-ink color
+            let color = rgb_to_epd_color(r, g, b);
 
             *color_counts.entry(color as u8).or_insert(0) += 1;
             bitmap.set_pixel(x, y, color);
+
+            // Calculate quantization error
+            let actual_rgb = epd_color_to_rgb(color);
+            let error_r = r as f32 - actual_rgb.0 as f32;
+            let error_g = g as f32 - actual_rgb.1 as f32;
+            let error_b = b as f32 - actual_rgb.2 as f32;
+
+            // Distribute error to neighboring pixels (Floyd-Steinberg)
+            // Right: 7/16
+            if x + 1 < width {
+                let e = &mut error_buffer[y as usize][(x + 1) as usize];
+                e.0 += error_r * 7.0 / 16.0;
+                e.1 += error_g * 7.0 / 16.0;
+                e.2 += error_b * 7.0 / 16.0;
+            }
+            // Below-left: 3/16
+            if y + 1 < height && x > 0 {
+                let e = &mut error_buffer[(y + 1) as usize][(x - 1) as usize];
+                e.0 += error_r * 3.0 / 16.0;
+                e.1 += error_g * 3.0 / 16.0;
+                e.2 += error_b * 3.0 / 16.0;
+            }
+            // Below: 5/16
+            if y + 1 < height {
+                let e = &mut error_buffer[(y + 1) as usize][x as usize];
+                e.0 += error_r * 5.0 / 16.0;
+                e.1 += error_g * 5.0 / 16.0;
+                e.2 += error_b * 5.0 / 16.0;
+            }
+            // Below-right: 1/16
+            if y + 1 < height && x + 1 < width {
+                let e = &mut error_buffer[(y + 1) as usize][(x + 1) as usize];
+                e.0 += error_r * 1.0 / 16.0;
+                e.1 += error_g * 1.0 / 16.0;
+                e.2 += error_b * 1.0 / 16.0;
+            }
         }
     }
 

@@ -89,12 +89,18 @@ fn temperature_bar(temp: f32) -> BarData {
     // Map temperature range 20°F to 100°F to 0-100% fill
     let fill_percent = ((temp - 20.0) / 80.0 * 100.0).clamp(0.0, 100.0);
 
-    let bar_color = if temp < 60.0 {
-        "blue" // Cold/Cool
-    } else if temp < 75.0 {
+    let bar_color = if temp < 40.0 {
+        "blue" // Freezing/Very Cold
+    } else if temp < 50.0 {
+        "rgb(128,128,255)" // Cold (will dither blue+white for light blue)
+    } else if temp < 60.0 {
+        "rgb(128,255,128)" // Cool (will dither green+white for light green)
+    } else if temp < 70.0 {
         "green" // Comfortable
-    } else if temp < 85.0 {
-        "yellow" // Warm
+    } else if temp < 80.0 {
+        "rgb(200,255,0)" // Mild (will dither green+yellow for yellow-green)
+    } else if temp < 90.0 {
+        "orange" // Warm (will dither red+yellow)
     } else {
         "red" // Hot
     };
@@ -109,14 +115,28 @@ fn humidity_bar(humidity: i32, temp: f32) -> BarData {
     // Fill percent is directly proportional to humidity
     let fill_percent = humidity.clamp(0, 100) as f32;
 
-    let bar_color = if humidity < 30 {
-        "yellow" // Too dry
-    } else if humidity < 60 {
+    let bar_color = if humidity < 20 {
+        "orange" // Very dry (will dither red+yellow)
+    } else if humidity < 35 {
+        "yellow" // Dry
+    } else if humidity < 50 {
+        "rgb(128,255,128)" // Comfortable-dry (will dither green+white)
+    } else if humidity < 65 {
         "green" // Comfortable
-    } else if temp >= 70.0 {
-        "red" // Humid and uncomfortable
+    } else if temp >= 75.0 {
+        // High humidity with warm/hot temps - increasingly uncomfortable
+        if humidity < 80 {
+            "orange" // Humid and warm (will dither red+yellow)
+        } else {
+            "red" // Very humid and hot - uncomfortable
+        }
     } else {
-        "blue" // Moist but comfortable
+        // High humidity but cooler temps
+        if humidity < 80 {
+            "rgb(128,128,255)" // Moist (will dither blue+white for light blue)
+        } else {
+            "blue" // Very moist
+        }
     };
 
     BarData {
@@ -129,14 +149,20 @@ fn wind_bar(wind_speed: f32) -> BarData {
     // Map wind speed 0-40 mph to 0-100% fill
     let fill_percent = (wind_speed / 40.0 * 100.0).clamp(0.0, 100.0);
 
-    let bar_color = if wind_speed < 5.0 {
+    let bar_color = if wind_speed < 3.0 {
         "green" // Calm
-    } else if wind_speed < 15.0 {
-        "blue" // Breezy
+    } else if wind_speed < 8.0 {
+        "rgb(128,255,128)" // Light breeze (will dither green+white)
+    } else if wind_speed < 12.0 {
+        "rgb(128,128,255)" // Gentle breeze (will dither blue+white for light blue)
+    } else if wind_speed < 18.0 {
+        "blue" // Moderate breeze
     } else if wind_speed < 25.0 {
         "yellow" // Windy
+    } else if wind_speed < 32.0 {
+        "orange" // Very windy (will dither red+yellow)
     } else {
-        "red" // Storm
+        "red" // Storm/dangerous
     };
 
     BarData {
