@@ -179,18 +179,10 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
 
     // Battery percentage (if provided)
     if let Some(pct) = battery_pct {
-        let battery_color = if pct > 50 {
-            "green"
-        } else if pct > 20 {
-            "blue"
-        } else {
-            "red"
-        };
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="{}">Battery: {}%</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery: {}%</text>"#,
             width - 10,
             footer_y,
-            battery_color,
             pct
         ));
     }
@@ -213,7 +205,6 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         let change = last.close - first.close;
         let change_pct = (change / first.close) * 100.0;
         let change_sign = if change >= 0.0 { "+" } else { "" };
-        let change_color = if change >= 0.0 { "green" } else { "red" };
 
         // Current price (top left)
         svg.push_str(&format!(
@@ -233,10 +224,9 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
 
         // Change amount and percentage (top right)
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="{}">{}{:.2} ({}{:.1}%)</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">{}{:.2} ({}{:.1}%)</text>"#,
             x + width - 5,
             y + 20,
-            change_color,
             change_sign,
             change,
             change_sign,

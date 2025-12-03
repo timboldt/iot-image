@@ -122,58 +122,49 @@ fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     }
 }
 
-/// Apply simple checkerboard dithering to choose between two colors
-/// Uses (x + y) % 2 pattern for a clean checkerboard
-fn checkerboard_dither_color(
-    r: u8,
-    g: u8,
-    b: u8,
+/// 4x4 Bayer matrix for ordered dithering
+/// Values range from 0-15, normalized to 0.0-1.0
+const BAYER_MATRIX_4X4: [[f32; 4]; 4] = [
+    [0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0],
+    [12.0/16.0, 4.0/16.0, 14.0/16.0,  6.0/16.0],
+    [3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0],
+    [15.0/16.0, 7.0/16.0, 13.0/16.0,  5.0/16.0],
+];
+
+/// Apply ordered dithering with variable ratio between two colors
+/// Uses Bayer matrix to determine which color based on the ratio
+fn ordered_dither_color(
+    _r: u8,
+    _g: u8,
+    _b: u8,
     x: u16,
     y: u16,
     color1: EpdColor,
     color2: EpdColor,
+    dist1: f32,
+    dist2: f32,
 ) -> EpdColor {
-    let (r1, g1, b1) = epd_color_to_rgb(color1);
-    let (r2, g2, b2) = epd_color_to_rgb(color2);
+    // Calculate ratio: how much should be color1 vs color2
+    // If dist1 is small, we want mostly color1
+    // If dist2 is small, we want mostly color2
+    let total_dist = dist1 + dist2;
+    if total_dist < 0.001 {
+        return color1; // Avoid division by zero
+    }
 
-    // Calculate how close the input color is to color1 vs color2 for each channel
-    let r_ratio = if r1 == r2 {
-        0.5
-    } else {
-        (r as f32 - r1 as f32) / (r2 as f32 - r1 as f32)
-    };
-    let g_ratio = if g1 == g2 {
-        0.5
-    } else {
-        (g as f32 - g1 as f32) / (g2 as f32 - g1 as f32)
-    };
-    let b_ratio = if b1 == b2 {
-        0.5
-    } else {
-        (b as f32 - b1 as f32) / (b2 as f32 - b1 as f32)
-    };
+    // Ratio of color2 (0.0 = all color1, 1.0 = all color2)
+    let color2_ratio = dist1 / total_dist;
 
-    // Average the ratios
-    let avg_ratio = ((r_ratio + g_ratio + b_ratio) / 3.0).clamp(0.0, 1.0);
+    // Get Bayer threshold for this pixel position
+    let bayer_x = (x % 4) as usize;
+    let bayer_y = (y % 4) as usize;
+    let threshold = BAYER_MATRIX_4X4[bayer_y][bayer_x];
 
-    // Simple checkerboard pattern: if (x + y) is even, prefer color1, else prefer color2
-    // Adjust threshold based on the ratio to control color mixing
-    let is_even = (x + y) % 2 == 0;
-
-    if is_even {
-        // On even positions, use color1 if ratio < threshold
-        if avg_ratio < 0.5 {
-            color1
-        } else {
-            color2
-        }
+    // If color2_ratio is higher than threshold, use color2
+    if color2_ratio > threshold {
+        color2
     } else {
-        // On odd positions, use color2 if ratio > threshold
-        if avg_ratio > 0.5 {
-            color2
-        } else {
-            color1
-        }
+        color1
     }
 }
 
@@ -207,16 +198,51 @@ fn rgb_to_epd_color_dithered(r: u8, g: u8, b: u8, x: u16, y: u16) -> EpdColor {
     // Get two closest colors
     let color1 = distances[0].0;
     let color2 = distances[1].0;
+    let dist1 = distances[0].1;
+    let dist2 = distances[1].1;
 
     // Only skip dithering if the color is VERY close to a pure e-ink color
     // This keeps pure black, pure white, etc. crisp
-    // Threshold of 20 is about 4.5% of max RGB distance (441)
-    if distances[0].1 < 20.0 {
+    // Threshold of 15 is about 3.4% of max RGB distance (441)
+    if dist1 < 15.0 {
         return color1;
     }
 
-    // Use checkerboard dithering to choose between the two closest colors
-    checkerboard_dither_color(r, g, b, x, y, color1, color2)
+    // Use ordered dithering with variable ratio based on distances
+    ordered_dither_color(r, g, b, x, y, color1, color2, dist1, dist2)
+}
+
+/// Convert e-ink bitmap back to PNG for debugging
+pub fn bitmap_to_png(bitmap: &EpdBitmap) -> Result<Vec<u8>, String> {
+    let mut pixmap = tiny_skia::Pixmap::new(bitmap.width as u32, bitmap.height as u32)
+        .ok_or("Failed to create pixmap")?;
+
+    // Convert each pixel back to RGB
+    for y in 0..bitmap.height {
+        for x in 0..bitmap.width {
+            let index = y as usize * bitmap.width as usize + x as usize;
+            let color_val = bitmap.data[index];
+
+            // Map color value back to RGB
+            let (r, g, b) = match color_val {
+                0 => (0, 0, 0),       // Black
+                1 => (255, 255, 255), // White
+                2 => (0, 255, 0),     // Green
+                3 => (0, 0, 255),     // Blue
+                4 => (255, 0, 0),     // Red
+                5 => (255, 255, 0),   // Yellow
+                _ => (128, 128, 128), // Unknown - gray
+            };
+
+            let pixel = tiny_skia::ColorU8::from_rgba(r, g, b, 255);
+            pixmap.pixels_mut()[y as usize * bitmap.width as usize + x as usize] =
+                pixel.premultiply();
+        }
+    }
+
+    pixmap
+        .encode_png()
+        .map_err(|e| format!("Failed to encode PNG: {}", e))
 }
 
 /// Render SVG file to e-ink bitmap
