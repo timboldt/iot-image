@@ -80,106 +80,68 @@ fn load_weather_icon_as_data_uri(icon_code: &str) -> Result<String, std::io::Err
     Ok(format!("data:image/svg+xml;base64,{}", encoded))
 }
 
-struct QualitativeText {
-    text: &'static str,
-    fg_color: &'static str,
-    bg_color: &'static str,
+struct BarData {
+    fill_percent: f32, // 0.0 to 100.0
+    bar_color: &'static str,
 }
 
-fn temperature_text(temp: f32) -> QualitativeText {
-    if temp < 30.0 {
-        QualitativeText {
-            text: "Freezing",
-            fg_color: "white",
-            bg_color: "blue",
-        }
-    } else if temp < 50.0 {
-        QualitativeText {
-            text: "Cold",
-            fg_color: "blue",
-            bg_color: "white",
-        }
-    } else if temp < 70.0 {
-        QualitativeText {
-            text: "Cool",
-            fg_color: "black",
-            bg_color: "white",
-        }
-    } else if temp < 80.0 {
-        QualitativeText {
-            text: "Mild",
-            fg_color: "green",
-            bg_color: "white",
-        }
-    } else if temp < 90.0 {
-        QualitativeText {
-            text: "Warm",
-            fg_color: "red",
-            bg_color: "white",
-        }
+fn temperature_bar(temp: f32) -> BarData {
+    // Map temperature range 20°F to 100°F to 0-100% fill
+    let fill_percent = ((temp - 20.0) / 80.0 * 100.0).clamp(0.0, 100.0);
+
+    let bar_color = if temp < 60.0 {
+        "blue" // Cold/Cool
+    } else if temp < 75.0 {
+        "green" // Comfortable
+    } else if temp < 85.0 {
+        "yellow" // Warm
     } else {
-        QualitativeText {
-            text: "Hot",
-            fg_color: "white",
-            bg_color: "red",
-        }
+        "red" // Hot
+    };
+
+    BarData {
+        fill_percent,
+        bar_color,
     }
 }
 
-fn humidity_text(humidity: i32, temp: f32) -> QualitativeText {
-    if humidity < 20 {
-        QualitativeText {
-            text: "Dry",
-            fg_color: "red",
-            bg_color: "white",
-        }
+fn humidity_bar(humidity: i32, temp: f32) -> BarData {
+    // Fill percent is directly proportional to humidity
+    let fill_percent = humidity.clamp(0, 100) as f32;
+
+    let bar_color = if humidity < 30 {
+        "yellow" // Too dry
     } else if humidity < 60 {
-        QualitativeText {
-            text: "Normal",
-            fg_color: "black",
-            bg_color: "white",
-        }
+        "green" // Comfortable
     } else if temp >= 70.0 {
-        // High humidity + warm = uncomfortable
-        QualitativeText {
-            text: "Humid",
-            fg_color: "white",
-            bg_color: "red",
-        }
+        "red" // Humid and uncomfortable
     } else {
-        QualitativeText {
-            text: "Normal",
-            fg_color: "black",
-            bg_color: "white",
-        }
+        "blue" // Moist but comfortable
+    };
+
+    BarData {
+        fill_percent,
+        bar_color,
     }
 }
 
-fn wind_text(wind_speed: f32) -> QualitativeText {
-    if wind_speed < 5.0 {
-        QualitativeText {
-            text: "Calm",
-            fg_color: "green",
-            bg_color: "white",
-        }
+fn wind_bar(wind_speed: f32) -> BarData {
+    // Map wind speed 0-40 mph to 0-100% fill
+    let fill_percent = (wind_speed / 40.0 * 100.0).clamp(0.0, 100.0);
+
+    let bar_color = if wind_speed < 5.0 {
+        "green" // Calm
     } else if wind_speed < 15.0 {
-        QualitativeText {
-            text: "Breezy",
-            fg_color: "black",
-            bg_color: "white",
-        }
-    } else if wind_speed < 30.0 {
-        QualitativeText {
-            text: "Windy",
-            fg_color: "red",
-            bg_color: "white",
-        }
+        "blue" // Breezy
+    } else if wind_speed < 25.0 {
+        "yellow" // Windy
     } else {
-        QualitativeText {
-            text: "Storm",
-            fg_color: "white",
-            bg_color: "red",
-        }
+        "red" // Storm
+    };
+
+    BarData {
+        fill_percent,
+        bar_color,
     }
 }
 
@@ -268,19 +230,25 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
-    let morn_qual = temperature_text(today.temp.morn);
-    // Add background rectangle if not white
-    if morn_qual.bg_color != "white" {
-        svg.push_str(&format!(
-            r#"  <rect x="35" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
-            temp_y + 5.0,
-            morn_qual.bg_color
-        ));
-        svg.push('\n');
-    }
+    let morn_bar = temperature_bar(today.temp.morn);
+    let bar_width = 100.0;
+    let bar_height = 20.0;
+    let fill_width = bar_width * (morn_bar.fill_percent / 100.0);
+
+    // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
-        temp_y + 28.0, morn_qual.fg_color, morn_qual.text
+        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        temp_y + 5.0, bar_width, bar_height
+    ));
+    svg.push('\n');
+
+    // Filled portion
+    svg.push_str(&format!(
+        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+        temp_y + 5.0,
+        fill_width,
+        bar_height,
+        morn_bar.bar_color
     ));
     svg.push('\n');
 
@@ -292,19 +260,24 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
-    let day_qual = temperature_text(today.temp.day);
-    if day_qual.bg_color != "white" {
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
-            35.0 + temp_spacing,
-            temp_y + 5.0,
-            day_qual.bg_color
-        ));
-        svg.push('\n');
-    }
+    let day_bar = temperature_bar(today.temp.day);
+    let fill_width = bar_width * (day_bar.fill_percent / 100.0);
+
+    // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
-        40.0 + temp_spacing, temp_y + 28.0, day_qual.fg_color, day_qual.text
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        35.0 + temp_spacing, temp_y + 5.0, bar_width, bar_height
+    ));
+    svg.push('\n');
+
+    // Filled portion
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+        35.0 + temp_spacing,
+        temp_y + 5.0,
+        fill_width,
+        bar_height,
+        day_bar.bar_color
     ));
     svg.push('\n');
 
@@ -316,52 +289,80 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
-    let night_qual = temperature_text(today.temp.night);
-    if night_qual.bg_color != "white" {
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="60" height="32" fill="{}" rx="4"/>"#,
-            35.0 + 2.0 * temp_spacing,
-            temp_y + 5.0,
-            night_qual.bg_color
-        ));
-        svg.push('\n');
-    }
+    let night_bar = temperature_bar(today.temp.night);
+    let fill_width = bar_width * (night_bar.fill_percent / 100.0);
+
+    // Background (container) rectangle
     svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="24" font-weight="bold" fill="{}">{}</text>"#,
-        40.0 + 2.0 * temp_spacing, temp_y + 28.0, night_qual.fg_color, night_qual.text
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        35.0 + 2.0 * temp_spacing, temp_y + 5.0, bar_width, bar_height
+    ));
+    svg.push('\n');
+
+    // Filled portion
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+        35.0 + 2.0 * temp_spacing,
+        temp_y + 5.0,
+        fill_width,
+        bar_height,
+        night_bar.bar_color
     ));
     svg.push('\n');
 
     // Humidity and Wind in a row
     let detail_y = 280.0;
 
-    let hum_qual = humidity_text(today.humidity, today.temp.day);
-    if hum_qual.bg_color != "white" {
-        svg.push_str(&format!(
-            r#"  <rect x="150" y="{}" width="50" height="24" fill="{}" rx="4"/>"#,
-            detail_y - 18.0,
-            hum_qual.bg_color
-        ));
-        svg.push('\n');
-    }
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity: <tspan font-weight="bold" fill="{}">{}</tspan></text>"#,
-        detail_y, hum_qual.fg_color, hum_qual.text
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity</text>"#,
+        detail_y
     ));
     svg.push('\n');
 
-    let wind_qual = wind_text(today.wind_speed);
-    if wind_qual.bg_color != "white" {
-        svg.push_str(&format!(
-            r#"  <rect x="90" y="{}" width="80" height="28" fill="{}" rx="4"/>"#,
-            detail_y + 12.0,
-            wind_qual.bg_color
-        ));
-        svg.push('\n');
-    }
+    let hum_bar = humidity_bar(today.humidity, today.temp.day);
+    let hum_bar_width = 150.0;
+    let hum_fill_width = hum_bar_width * (hum_bar.fill_percent / 100.0);
+
+    // Background rectangle
     svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind: <tspan font-weight="bold" fill="{}">{}</tspan></text>"#,
-        detail_y + 35.0, wind_qual.fg_color, wind_qual.text
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        detail_y - 15.0, hum_bar_width, bar_height
+    ));
+    svg.push('\n');
+
+    // Filled portion
+    svg.push_str(&format!(
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+        detail_y - 15.0,
+        hum_fill_width,
+        bar_height,
+        hum_bar.bar_color
+    ));
+    svg.push('\n');
+
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind</text>"#,
+        detail_y + 35.0
+    ));
+    svg.push('\n');
+
+    let wind_bar = wind_bar(today.wind_speed);
+    let wind_fill_width = hum_bar_width * (wind_bar.fill_percent / 100.0);
+
+    // Background rectangle
+    svg.push_str(&format!(
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+        detail_y + 20.0, hum_bar_width, bar_height
+    ));
+    svg.push('\n');
+
+    // Filled portion
+    svg.push_str(&format!(
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+        detail_y + 20.0,
+        wind_fill_width,
+        bar_height,
+        wind_bar.bar_color
     ));
     svg.push('\n');
 
@@ -443,20 +444,27 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
             }
         }
 
-        // Temperature qualitative indicator
-        let temp_qual = temperature_text(day.temp.day);
-        if temp_qual.bg_color != "white" {
-            svg.push_str(&format!(
-                r#"  <rect x="{}" y="{}" width="60" height="28" fill="{}" rx="4"/>"#,
-                right_x - 5.0,
-                y + 25.0,
-                temp_qual.bg_color
-            ));
-            svg.push('\n');
-        }
+        // Temperature bar indicator
+        let temp_bar = temperature_bar(day.temp.day);
+        let forecast_bar_width = 120.0;
+        let forecast_bar_height = 16.0;
+        let forecast_fill_width = forecast_bar_width * (temp_bar.fill_percent / 100.0);
+
+        // Background rectangle
         svg.push_str(&format!(
-            r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" font-weight="bold" fill="{}">{}</text>"#,
-            right_x, y + 47.0, temp_qual.fg_color, temp_qual.text
+            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="lightgray" stroke="black" stroke-width="1" rx="3"/>"#,
+            right_x, y + 30.0, forecast_bar_width, forecast_bar_height
+        ));
+        svg.push('\n');
+
+        // Filled portion
+        svg.push_str(&format!(
+            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="3"/>"#,
+            right_x,
+            y + 30.0,
+            forecast_fill_width,
+            forecast_bar_height,
+            temp_bar.bar_color
         ));
         svg.push('\n');
     }
