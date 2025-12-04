@@ -5,7 +5,7 @@
 #include "config.h"
 
 // Display modes
-enum DisplayMode { MODE_WEATHER = 0, MODE_STOCKS = 1 };
+enum DisplayMode { MODE_WEATHER = 0, MODE_STOCKS = 1, MODE_FRED = 2 };
 
 // RTC memory to persist display mode across deep sleep
 RTC_DATA_ATTR DisplayMode current_mode = MODE_WEATHER;
@@ -120,10 +120,9 @@ void setup_wifi() {
  * Buttons are active-low (LOW when pressed)
  */
 void setup_buttons() {
-    pinMode(BUTTON_KEY0,
-            INPUT_PULLUP);  // Button 1 (Refresh - wake & keep current mode)
-    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Stocks)
-    pinMode(BUTTON_KEY2, INPUT_PULLUP);  // Button 3 (Weather)
+    pinMode(BUTTON_KEY0, INPUT_PULLUP);  // Button 1 (Green - FRED)
+    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Middle - Stocks)
+    pinMode(BUTTON_KEY2, INPUT_PULLUP);  // Button 3 (Left - Weather)
 
     Serial.println("[Buttons] Initialized with pullups");
 }
@@ -145,11 +144,9 @@ void check_wake_reason() {
 
             // Check which button triggered the wakeup
             if (wakeup_pin_mask & (1ULL << BUTTON_KEY0)) {
-                Serial.printf(
-                    "[Wake] Button 1 (Green) pressed - refreshing current mode "
-                    "(%s)\n",
-                    current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
-                // Note: current_mode unchanged - just wake and refresh display
+                Serial.println(
+                    "[Wake] Button 1 (Green) pressed - switching to FRED");
+                current_mode = MODE_FRED;
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY1)) {
                 Serial.println(
                     "[Wake] Button 2 (Middle) pressed - switching to STOCKS");
@@ -167,14 +164,14 @@ void check_wake_reason() {
         case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("[Wake] Woke up from timer");
             Serial.printf("[Wake] Current mode: %s\n",
-                          current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+                          current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
             break;
 
         default:
             Serial.printf("[Wake] First boot or reset (reason: %d)\n",
                           wakeup_reason);
             Serial.printf("[Wake] Current mode: %s\n",
-                          current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+                          current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
             break;
     }
 }
@@ -281,8 +278,10 @@ void download_and_render_image() {
     const char* endpoint;
     if (current_mode == MODE_WEATHER) {
         endpoint = "weather/seed-e1002.bin";
-    } else {
+    } else if (current_mode == MODE_STOCKS) {
         endpoint = "stocks/seed-e1002.bin";
+    } else {
+        endpoint = "fred/seed-e1002.bin";
     }
 
     HTTPClient http;
@@ -296,7 +295,7 @@ void download_and_render_image() {
     }
 
     Serial.printf("[Stream] Mode: %s\n",
-                  current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+                  current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
     Serial.printf("[Stream] Fetching: %s\n", url.c_str());
 
     http.begin(url);
@@ -437,7 +436,7 @@ void download_and_render_image() {
 void deep_sleep() {
     Serial.printf("[Sleep] Sleeping for %d seconds\n", UPDATE_INTERVAL_SEC);
     Serial.printf("[Sleep] Current mode: %s (will persist on timer wake)\n",
-                  current_mode == MODE_WEATHER ? "WEATHER" : "STOCKS");
+                  current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
 
     // Calculate wake time
     uint64_t sleep_duration_us = UPDATE_INTERVAL_SEC * 1000000ULL;

@@ -14,3 +14,6 @@ The backend is currently written in Rust. The frontend currently uses the Arduin
 
 ### Stock Charts
 ![Stock Charts](assets/stocks.png)
+
+### Federal Reserve Charts
+![Market Crash Monitor](assets/fred.png)
