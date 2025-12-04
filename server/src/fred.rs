@@ -42,7 +42,7 @@ async fn fetch_series(
     limit: usize,
 ) -> Result<Vec<DataPoint>, Box<dyn std::error::Error>> {
     let url = format!(
-        "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&observation_start=2020-02-01&observation_end=2020-06-01&sort_order=desc&limit={}",
+        "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&sort_order=desc&limit={}",
         series_id, api_key, limit
     );
 
