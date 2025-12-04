@@ -125,18 +125,15 @@ fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
 /// 4x4 Bayer matrix for ordered dithering
 /// Values range from 0-15, normalized to 0.0-1.0
 const BAYER_MATRIX_4X4: [[f32; 4]; 4] = [
-    [0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0],
-    [12.0/16.0, 4.0/16.0, 14.0/16.0,  6.0/16.0],
-    [3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0],
-    [15.0/16.0, 7.0/16.0, 13.0/16.0,  5.0/16.0],
+    [0.0 / 16.0, 8.0 / 16.0, 2.0 / 16.0, 10.0 / 16.0],
+    [12.0 / 16.0, 4.0 / 16.0, 14.0 / 16.0, 6.0 / 16.0],
+    [3.0 / 16.0, 11.0 / 16.0, 1.0 / 16.0, 9.0 / 16.0],
+    [15.0 / 16.0, 7.0 / 16.0, 13.0 / 16.0, 5.0 / 16.0],
 ];
 
 /// Apply ordered dithering with variable ratio between two colors
 /// Uses Bayer matrix to determine which color based on the ratio
 fn ordered_dither_color(
-    _r: u8,
-    _g: u8,
-    _b: u8,
     x: u16,
     y: u16,
     color1: EpdColor,
@@ -209,7 +206,7 @@ fn rgb_to_epd_color_dithered(r: u8, g: u8, b: u8, x: u16, y: u16) -> EpdColor {
     }
 
     // Use ordered dithering with variable ratio based on distances
-    ordered_dither_color(r, g, b, x, y, color1, color2, dist1, dist2)
+    ordered_dither_color(x, y, color1, color2, dist1, dist2)
 }
 
 /// Convert e-ink bitmap back to PNG for debugging

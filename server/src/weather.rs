@@ -679,52 +679,51 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     let footer_y = 470;
 
     // Battery bar (if provided) - now on the left
-    if let Some(pct) = battery_pct {
-        let battery_bar_width = 100.0;
-        let battery_bar_height = 12.0;
-        let battery_x = 75.0;
-        let battery_y = footer_y as f32 - 10.0;
-        let battery_inset = 2.0;
-        let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
+    let pct = battery_pct.unwrap_or(50);
+    let battery_bar_width = 100.0;
+    let battery_bar_height = 12.0;
+    let battery_x = 75.0;
+    let battery_y = footer_y as f32 - 10.0;
+    let battery_inset = 2.0;
+    let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
 
-        // Label
-        svg.push_str(&format!(
-            r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
-            footer_y
-        ));
-        svg.push('\n');
+    // Label
+    svg.push_str(&format!(
+        r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
+        footer_y
+    ));
+    svg.push('\n');
 
-        // Background (container) rectangle
-        svg.push_str(&format!(
+    // Background (container) rectangle
+    svg.push_str(&format!(
             r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
             battery_x, battery_y, battery_bar_width, battery_bar_height
         ));
-        svg.push('\n');
+    svg.push('\n');
 
-        // ClipPath for battery bar
-        svg.push_str(r#"  <clipPath id="batteryClip">"#);
-        svg.push('\n');
-        svg.push_str(&format!(
-            r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_fill_width,
-            battery_bar_height - battery_inset * 2.0
-        ));
-        svg.push('\n');
-        svg.push_str(r#"  </clipPath>"#);
-        svg.push('\n');
+    // ClipPath for battery bar
+    svg.push_str(r#"  <clipPath id="batteryClip">"#);
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_fill_width,
+        battery_bar_height - battery_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
 
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
+    // Full-width gradient rect, clipped
+    svg.push_str(&format!(
             r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
             battery_x + battery_inset,
             battery_y + battery_inset,
             battery_bar_width - battery_inset * 2.0,
             battery_bar_height - battery_inset * 2.0
         ));
-        svg.push('\n');
-    }
+    svg.push('\n');
 
     // Last updated timestamp - now on the right
     let now = Local::now();
