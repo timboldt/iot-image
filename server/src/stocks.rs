@@ -188,47 +188,46 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
     ));
 
     // Battery bar (if provided)
-    if let Some(pct) = battery_pct {
-        let battery_bar_width = 100;
-        let battery_bar_height = 12;
-        let battery_x = width - 110;
-        let battery_y = footer_y - 10;
-        let battery_inset = 2;
-        let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+    let pct = battery_pct.unwrap_or(50);
+    let battery_bar_width = 100;
+    let battery_bar_height = 12;
+    let battery_x = width - 110;
+    let battery_y = footer_y - 10;
+    let battery_inset = 2;
+    let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
 
-        // Label
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery:</text>"#,
-            battery_x - 5,
-            footer_y
-        ));
+    // Label
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery:</text>"#,
+        battery_x - 5,
+        footer_y
+    ));
 
-        // Background (container) rectangle
-        svg.push_str(&format!(
+    // Background (container) rectangle
+    svg.push_str(&format!(
             r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
             battery_x, battery_y, battery_bar_width, battery_bar_height
         ));
 
-        // ClipPath for battery bar
-        svg.push_str(r#"<clipPath id="batteryClip">"#);
-        svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_fill_width,
-            battery_bar_height - battery_inset * 2
-        ));
-        svg.push_str(r#"</clipPath>"#);
+    // ClipPath for battery bar
+    svg.push_str(r#"<clipPath id="batteryClip">"#);
+    svg.push_str(&format!(
+        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_fill_width,
+        battery_bar_height - battery_inset * 2
+    ));
+    svg.push_str(r#"</clipPath>"#);
 
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
+    // Full-width gradient rect, clipped
+    svg.push_str(&format!(
             r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
             battery_x + battery_inset,
             battery_y + battery_inset,
             battery_bar_width - battery_inset * 2,
             battery_bar_height - battery_inset * 2
         ));
-    }
 
     svg.push_str("</svg>");
     svg
