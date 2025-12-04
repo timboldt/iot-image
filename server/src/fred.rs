@@ -314,7 +314,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
     // Create gradient ID unique to this chart
     let gradient_id = format!("vixGradient_{}_{}", x, y);
 
-    // Create gradient: green (0-20), yellow (20-40), red (>40)
+    // Create gradient: green (0-20), orange (20-40), red (>40)
     svg.push_str(&format!(
         r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
         gradient_id
@@ -330,10 +330,10 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
         let calm_pct = ((calm_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
         svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
         svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
             calm_pct
         ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:yellow;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
     } else {
         // Full range - green, yellow, and red (smooth transitions)
         if min_val < calm_threshold {
@@ -342,7 +342,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
 
             svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
             svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
                 calm_pct
             ));
             svg.push_str(&format!(
@@ -353,7 +353,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
         } else if min_val < fear_threshold {
             // Starts in yellow zone
             let fear_pct = ((fear_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
             svg.push_str(&format!(
                 r#"<stop offset="{}%" style="stop-color:red;stop-opacity:1" />"#,
                 fear_pct
@@ -460,7 +460,7 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
     // Create gradient ID unique to this chart
     let gradient_id = format!("sp500Gradient_{}_{}", x, y);
 
-    // Create gradient: green (0 to -7%), yellow (-7% to -20%), red (below -20%)
+    // Create gradient: green (0 to -7%), orange (-7% to -20%), red (below -20%)
     svg.push_str(&format!(
         r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
         gradient_id
@@ -474,7 +474,7 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
     } else if min_val >= threshold_20 {
         // Green to yellow - drawdown between 0% and -20% (smooth transition)
         let threshold_7_pct = ((threshold_7 - min_val) / range * 100.0).min(100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
         svg.push_str(&format!(
             r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
             threshold_7_pct
@@ -487,7 +487,7 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
 
         svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
         svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
             threshold_20_pct
         ));
         svg.push_str(&format!(
@@ -742,7 +742,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
     // Create gradient ID unique to this chart
     let gradient_id = format!("treasuryGradient_{}_{}", x, y);
 
-    // Create gradient: red (below 3%), yellow (3-4%), green (above 4%)
+    // Create gradient: red (below 3%), orange (3-4%), green (above 4%)
     svg.push_str(&format!(
         r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
         gradient_id
@@ -758,10 +758,10 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         let stress_pct = ((stress_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
         svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
         svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
             stress_pct
         ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:yellow;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
     } else {
         // Full range - red, yellow, and green (smooth transitions)
         if min_val < stress_threshold {
@@ -770,7 +770,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
 
             svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
             svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
                 stress_pct
             ));
             svg.push_str(&format!(
@@ -781,7 +781,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         } else if min_val < normal_threshold {
             // Starts in yellow zone
             let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
             svg.push_str(&format!(
                 r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
                 normal_pct
