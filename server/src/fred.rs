@@ -164,14 +164,12 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     ];
 
     // Generate charts
-    svg.push_str(&generate_area_chart(
+    svg.push_str(&generate_vix_chart(
         &fred.vix,
         positions[0].0,
         positions[0].1,
         chart_width,
         chart_height,
-        "red",
-        Some(15.0),
     ));
     svg.push_str(&generate_sp500_chart(
         &fred.sp500,
@@ -180,23 +178,19 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
         chart_width,
         chart_height,
     ));
-    svg.push_str(&generate_area_chart(
+    svg.push_str(&generate_credit_spread_chart(
         &fred.credit_spread,
         positions[2].0,
         positions[2].1,
         chart_width,
         chart_height,
-        "orange",
-        None,
     ));
-    svg.push_str(&generate_area_chart(
+    svg.push_str(&generate_treasury_chart(
         &fred.treasury_10y,
         positions[3].0,
         positions[3].1,
         chart_width,
         chart_height,
-        "blue",
-        None,
     ));
 
     // Footer with last updated and battery bar
@@ -261,15 +255,7 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     svg
 }
 
-fn generate_area_chart(
-    series: &SeriesData,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color: &str,
-    threshold: Option<f64>,
-) -> String {
+fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i32) -> String {
     let mut svg = String::new();
 
     // Chart border
@@ -287,20 +273,11 @@ fn generate_area_chart(
             series.name
         ));
 
-        // Format value based on magnitude
-        let value_str = if series.name.contains("%") {
-            format!("{:.2}%", last.value)
-        } else if last.value > 100.0 {
-            format!("{:.0}", last.value)
-        } else {
-            format!("{:.1}", last.value)
-        };
-
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{}</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.1}</text>"#,
             x + width - 5,
             y + 20,
-            value_str
+            last.value
         ));
     }
 
@@ -308,8 +285,117 @@ fn generate_area_chart(
         return svg;
     }
 
-    // Draw area chart
-    generate_area_chart_internal(&mut svg, series, x, y, width, height, color, threshold);
+    // VIX regime thresholds
+    let calm_threshold = 20.0;
+    let fear_threshold = 40.0;
+
+    // Calculate data range, ensuring thresholds are always visible
+    let data_min = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let data_max = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(100.0);
+
+    let min_val = data_min.min(calm_threshold);
+    let max_val = data_max.max(fear_threshold);
+    let range = if max_val > min_val {
+        max_val - min_val
+    } else {
+        1.0
+    };
+
+    // Create gradient ID unique to this chart
+    let gradient_id = format!("vixGradient_{}_{}", x, y);
+
+    // Create gradient: green (0-20), yellow (20-40), red (>40)
+    svg.push_str(&format!(
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        gradient_id
+    ));
+
+    // Calculate gradient stop positions based on data range
+    if max_val <= calm_threshold {
+        // All calm - just green
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    } else if max_val <= fear_threshold {
+        // Calm to elevated - green to yellow (smooth transition)
+        let calm_pct = ((calm_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            calm_pct
+        ));
+        svg.push_str(r#"<stop offset="100%" style="stop-color:yellow;stop-opacity:1" />"#);
+    } else {
+        // Full range - green, yellow, and red (smooth transitions)
+        if min_val < calm_threshold {
+            let calm_pct = ((calm_threshold - min_val) / range * 100.0).min(100.0);
+            let fear_pct = ((fear_threshold - min_val) / range * 100.0).min(100.0);
+
+            svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+                calm_pct
+            ));
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:red;stop-opacity:1" />"#,
+                fear_pct
+            ));
+            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        } else if min_val < fear_threshold {
+            // Starts in yellow zone
+            let fear_pct = ((fear_threshold - min_val) / range * 100.0).min(100.0);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:red;stop-opacity:1" />"#,
+                fear_pct
+            ));
+            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        } else {
+            // All fear - just red
+            svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        }
+    }
+
+    svg.push_str(r#"</linearGradient></defs>"#);
+
+    // Draw area chart with gradient
+    generate_area_chart_internal(
+        &mut svg,
+        series,
+        x,
+        y,
+        width,
+        height,
+        &format!("url(#{})", gradient_id),
+        None,
+    );
+
+    // Draw threshold lines (only if within actual data range)
+    let chart_x = x + 40;
+    let chart_y = y + 35;
+    let chart_h = height - 55;
+    let chart_w = width - 50;
+
+    for (threshold, color) in [(calm_threshold, "green"), (fear_threshold, "red")] {
+        if threshold >= data_min && threshold <= data_max {
+            let line_y =
+                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            svg.push_str(&format!(
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
+                chart_x, line_y, chart_x + chart_w, line_y, color
+            ));
+        }
+    }
 
     svg
 }
@@ -338,61 +424,404 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
             y + 20,
             last.value
         ));
+    }
 
-        // Calculate circuit breaker levels based on most recent close
-        let cb_7 = last.value * 0.93; // -7%
-        let cb_13 = last.value * 0.87; // -13%
-        let cb_20 = last.value * 0.80; // -20%
+    if series.points.is_empty() {
+        return svg;
+    }
 
-        // Draw area chart
-        generate_area_chart_internal(&mut svg, series, x, y, width, height, "black", None);
+    // Calculate data range
+    let data_min = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let data_max = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(100.0);
 
-        // Draw circuit breaker lines
-        if !series.points.is_empty() {
-            let min_val = series
-                .points
-                .iter()
-                .map(|p| p.value)
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(0.0);
-            let max_val = series
-                .points
-                .iter()
-                .map(|p| p.value)
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(100.0);
-            let range = if max_val > min_val {
-                max_val - min_val
+    // Calculate drawdown thresholds based on highest value in chart
+    let threshold_7 = data_max * 0.93; // -7%
+    let threshold_20 = data_max * 0.80; // -20%
+
+    // Ensure both thresholds are always visible
+    let min_val = data_min.min(threshold_20);
+    let max_val = data_max;
+    let range = if max_val > min_val {
+        max_val - min_val
+    } else {
+        1.0
+    };
+
+    // Create gradient ID unique to this chart
+    let gradient_id = format!("sp500Gradient_{}_{}", x, y);
+
+    // Create gradient: green (0 to -7%), yellow (-7% to -20%), red (below -20%)
+    svg.push_str(&format!(
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        gradient_id
+    ));
+
+    // Calculate gradient stop positions
+    if min_val >= threshold_7 {
+        // All green - no drawdown beyond -7%
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    } else if min_val >= threshold_20 {
+        // Green to yellow - drawdown between 0% and -20% (smooth transition)
+        let threshold_7_pct = ((threshold_7 - min_val) / range * 100.0).min(100.0);
+        svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+            threshold_7_pct
+        ));
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    } else {
+        // Full range - green, yellow, and red (smooth transitions)
+        let threshold_7_pct = ((threshold_7 - min_val) / range * 100.0).min(100.0);
+        let threshold_20_pct = ((threshold_20 - min_val) / range * 100.0).min(100.0);
+
+        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            threshold_20_pct
+        ));
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+            threshold_7_pct
+        ));
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    }
+
+    svg.push_str(r#"</linearGradient></defs>"#);
+
+    // Draw area chart with gradient
+    generate_area_chart_internal(
+        &mut svg,
+        series,
+        x,
+        y,
+        width,
+        height,
+        &format!("url(#{})", gradient_id),
+        None,
+    );
+
+    // Draw threshold lines (only if within actual data range)
+    let chart_x = x + 40;
+    let chart_y = y + 35;
+    let chart_h = height - 55;
+    let chart_w = width - 50;
+
+    for (threshold, color) in [(threshold_7, "green"), (threshold_20, "red")] {
+        if threshold >= data_min && threshold <= data_max {
+            let line_y =
+                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            svg.push_str(&format!(
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
+                chart_x, line_y, chart_x + chart_w, line_y, color
+            ));
+        }
+    }
+
+    svg
+}
+
+fn generate_credit_spread_chart(
+    series: &SeriesData,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> String {
+    let mut svg = String::new();
+
+    // Chart border
+    svg.push_str(&format!(
+        r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2"/>"#,
+        x, y, width, height
+    ));
+
+    // Title and current value
+    if let Some(last) = series.points.last() {
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
+            x + 5,
+            y + 20,
+            series.name
+        ));
+
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.2}%</text>"#,
+            x + width - 5,
+            y + 20,
+            last.value
+        ));
+    }
+
+    if series.points.is_empty() {
+        return svg;
+    }
+
+    // High yield spread regime thresholds
+    let normal_threshold = 4.0;
+    let stress_threshold = 6.0;
+
+    // Calculate data range, ensuring thresholds are always visible
+    let data_min = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let data_max = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(10.0);
+
+    let min_val = data_min.min(normal_threshold);
+    let max_val = data_max.max(stress_threshold);
+    let range = if max_val > min_val {
+        max_val - min_val
+    } else {
+        1.0
+    };
+
+    // Create gradient ID unique to this chart
+    let gradient_id = format!("creditGradient_{}_{}", x, y);
+
+    // Create gradient with regime bands: <4% = green, 4-6% = orange, 6%+ = red
+    // Calculate percentages for gradient stops (inverted because SVG gradient goes top-to-bottom)
+
+    svg.push_str(&format!(
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        gradient_id
+    ));
+
+    // Calculate gradient stop positions based on data range
+    if max_val <= normal_threshold {
+        // All normal - just green
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    } else if min_val >= stress_threshold {
+        // All panic - just red
+        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+    } else {
+        // Mixed range - create gradient with stops
+        // Bottom is min_val, top is max_val
+        // Calculate where thresholds fall as percentages
+
+        if min_val < normal_threshold {
+            let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+                normal_pct
+            ));
+
+            if max_val > stress_threshold {
+                let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
+                svg.push_str(&format!(
+                    r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
+                    stress_pct
+                ));
+                svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
             } else {
-                1.0
-            };
-
-            let chart_x = x + 40;
-            let chart_y = y + 35;
-            let chart_h = height - 55;
-
-            // Only draw circuit breakers if they're in the visible range
-            for (level, color, label) in [
-                (cb_7, "orange", "-7%"),
-                (cb_13, "darkorange", "-13%"),
-                (cb_20, "red", "-20%"),
-            ] {
-                if level >= min_val && level <= max_val {
-                    let line_y =
-                        chart_y + chart_h - ((level - min_val) / range * chart_h as f64) as i32;
-                    svg.push_str(&format!(
-                        r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="1" stroke-dasharray="4,2"/>"#,
-                        chart_x, line_y, chart_x + width - 50, line_y, color
-                    ));
-                    svg.push_str(&format!(
-                        r#"<text x="{}" y="{}" font-size="9" fill="{}">{}</text>"#,
-                        chart_x + 2,
-                        line_y - 2,
-                        color,
-                        label
-                    ));
-                }
+                // Ends in stress zone
+                svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
             }
+        } else {
+            // Starts in stress zone
+            let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
+                stress_pct
+            ));
+            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        }
+    }
+
+    svg.push_str(r#"</linearGradient></defs>"#);
+
+    // Draw area chart with gradient
+    generate_area_chart_internal(
+        &mut svg,
+        series,
+        x,
+        y,
+        width,
+        height,
+        &format!("url(#{})", gradient_id),
+        None,
+    );
+
+    // Draw regime threshold lines (only if within actual data range)
+    let chart_x = x + 40;
+    let chart_y = y + 35;
+    let chart_h = height - 55;
+    let chart_w = width - 50;
+
+    for (threshold, color) in [(normal_threshold, "green"), (stress_threshold, "red")] {
+        if threshold >= data_min && threshold <= data_max {
+            let line_y =
+                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            svg.push_str(&format!(
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
+                chart_x, line_y, chart_x + chart_w, line_y, color
+            ));
+        }
+    }
+
+    svg
+}
+
+fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i32) -> String {
+    let mut svg = String::new();
+
+    // Chart border
+    svg.push_str(&format!(
+        r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2"/>"#,
+        x, y, width, height
+    ));
+
+    // Title and current value
+    if let Some(last) = series.points.last() {
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
+            x + 5,
+            y + 20,
+            series.name
+        ));
+
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.1}</text>"#,
+            x + width - 5,
+            y + 20,
+            last.value
+        ));
+    }
+
+    if series.points.is_empty() {
+        return svg;
+    }
+
+    // Treasury regime thresholds: green above 4%, yellow 3-4%, red below 3%
+    let stress_threshold = 3.0;
+    let normal_threshold = 4.0;
+
+    // Calculate data range, ensuring thresholds are always visible
+    let data_min = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let data_max = series
+        .points
+        .iter()
+        .map(|p| p.value)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(10.0);
+
+    let min_val = data_min.min(stress_threshold);
+    let max_val = data_max.max(normal_threshold);
+    let range = if max_val > min_val {
+        max_val - min_val
+    } else {
+        1.0
+    };
+
+    // Create gradient ID unique to this chart
+    let gradient_id = format!("treasuryGradient_{}_{}", x, y);
+
+    // Create gradient: red (below 3%), yellow (3-4%), green (above 4%)
+    svg.push_str(&format!(
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        gradient_id
+    ));
+
+    // Calculate gradient stop positions based on data range
+    if max_val <= stress_threshold {
+        // All stress - just red
+        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+    } else if max_val <= normal_threshold {
+        // Stress to elevated - red to yellow (smooth transition)
+        let stress_pct = ((stress_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+            stress_pct
+        ));
+        svg.push_str(r#"<stop offset="100%" style="stop-color:yellow;stop-opacity:1" />"#);
+    } else {
+        // Full range - red, yellow, and green (smooth transitions)
+        if min_val < stress_threshold {
+            let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
+            let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
+
+            svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:yellow;stop-opacity:1" />"#,
+                stress_pct
+            ));
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+                normal_pct
+            ));
+            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+        } else if min_val < normal_threshold {
+            // Starts in yellow zone
+            let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
+            svg.push_str(r#"<stop offset="0%" style="stop-color:yellow;stop-opacity:1" />"#);
+            svg.push_str(&format!(
+                r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+                normal_pct
+            ));
+            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+        } else {
+            // All normal - just green
+            svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+        }
+    }
+
+    svg.push_str(r#"</linearGradient></defs>"#);
+
+    // Draw area chart with gradient
+    generate_area_chart_internal(
+        &mut svg,
+        series,
+        x,
+        y,
+        width,
+        height,
+        &format!("url(#{})", gradient_id),
+        None,
+    );
+
+    // Draw threshold lines (only if within actual data range)
+    let chart_x = x + 40;
+    let chart_y = y + 35;
+    let chart_h = height - 55;
+    let chart_w = width - 50;
+
+    for (threshold, color) in [(stress_threshold, "red"), (normal_threshold, "green")] {
+        if threshold >= data_min && threshold <= data_max {
+            let line_y =
+                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            svg.push_str(&format!(
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
+                chart_x, line_y, chart_x + chart_w, line_y, color
+            ));
         }
     }
 
@@ -460,8 +889,8 @@ fn generate_area_chart_internal(
 
         // Draw filled area with transparency
         svg.push_str(&format!(
-            r#"<path d="{}" fill="{}" fill-opacity="0.3" stroke="{}" stroke-width="2"/>"#,
-            path, color, color
+            r#"<path d="{}" fill="{}" fill-opacity="0.3" stroke="black" stroke-width="1"/>"#,
+            path, color
         ));
 
         // Draw threshold line if provided (e.g., VIX panic level at 15)
