@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/bin
 EnvironmentFile=%h/bin/env.txt
-ExecStart=%h/bin/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY}
+ExecStart=%h/bin/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY} --stock-symbols=${STOCK_SYMBOLS}
 Restart=on-failure
 RestartSec=10s
 

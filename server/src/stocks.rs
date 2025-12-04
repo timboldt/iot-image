@@ -81,12 +81,14 @@ fn parse_twelve_data(data: TwelveDataResponse) -> Vec<StockPoint> {
     points
 }
 
-pub async fn fetch_stocks(api_key: &str) -> Result<StocksData, Box<dyn std::error::Error>> {
+pub async fn fetch_stocks(
+    api_key: &str,
+    symbols_str: &str,
+) -> Result<StocksData, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let mut stocks = Vec::new();
 
-    // Fetch all symbols (stocks and crypto) using Twelve Data
-    let symbols = vec!["BTC/USD", "QQQ", "IONQ", "TSLA"];
+    let symbols: Vec<&str> = symbols_str.split(',').map(|s| s.trim()).collect();
 
     for symbol in symbols {
         let url = format!(
@@ -136,6 +138,14 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
         width, height
     ));
 
+    // Define gradient for battery bar
+    svg.push_str(r#"<defs>"#);
+    svg.push_str(r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
+    svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+    svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    svg.push_str(r#"</linearGradient>"#);
+    svg.push_str(r#"</defs>"#);
+
     // Background
     svg.push_str(&format!(
         r#"<rect width="{}" height="{}" fill="white"/>"#,
@@ -160,7 +170,7 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
         svg.push_str(&generate_chart_svg(stock, x, y, chart_width, chart_height));
     }
 
-    // Footer with last updated and battery percentage
+    // Footer with last updated and battery bar
     let footer_y = height - 10;
 
     // Last updated timestamp (PST/PDT)
@@ -177,13 +187,46 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
         footer_y, timestamp
     ));
 
-    // Battery percentage (if provided)
+    // Battery bar (if provided)
     if let Some(pct) = battery_pct {
+        let battery_bar_width = 100;
+        let battery_bar_height = 12;
+        let battery_x = width - 110;
+        let battery_y = footer_y - 10;
+        let battery_inset = 2;
+        let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+
+        // Label
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery: {}%</text>"#,
-            width - 10,
-            footer_y,
-            pct
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery:</text>"#,
+            battery_x - 5,
+            footer_y
+        ));
+
+        // Background (container) rectangle
+        svg.push_str(&format!(
+            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
+            battery_x, battery_y, battery_bar_width, battery_bar_height
+        ));
+
+        // ClipPath for battery bar
+        svg.push_str(r#"<clipPath id="batteryClip">"#);
+        svg.push_str(&format!(
+            r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
+            battery_x + battery_inset,
+            battery_y + battery_inset,
+            battery_fill_width,
+            battery_bar_height - battery_inset * 2
+        ));
+        svg.push_str(r#"</clipPath>"#);
+
+        // Full-width gradient rect, clipped
+        svg.push_str(&format!(
+            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
+            battery_x + battery_inset,
+            battery_y + battery_inset,
+            battery_bar_width - battery_inset * 2,
+            battery_bar_height - battery_inset * 2
         ));
     }
 
@@ -272,18 +315,6 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
     let chart_w = width - 50;
     let chart_h = height - 55;
 
-    // Draw grid lines
-    for i in 0..5 {
-        let grid_y = chart_y + (chart_h * i) / 4;
-        svg.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#cccccc\" stroke-width=\"1\"/>",
-            chart_x,
-            grid_y,
-            chart_x + chart_w,
-            grid_y
-        ));
-    }
-
     // Draw candlesticks
     let num_points = stock.points.len();
     if num_points > 0 {
@@ -308,7 +339,7 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
 
             // Determine candle color (green if close >= open, red otherwise)
             let is_bullish = point.close >= point.open;
-            let color = if is_bullish { "#00AA00" } else { "#CC0000" };
+            let color = if is_bullish { "green" } else { "red" };
 
             // Draw high-low line (wick)
             svg.push_str(&format!(

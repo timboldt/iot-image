@@ -31,6 +31,9 @@ struct Args {
     /// Twelve Data API key
     #[arg(long)]
     stocks_api_key: String,
+    /// Stock symbols (comma-separated, e.g. "BTC/USD,QQQ,IONQ,TSLA")
+    #[arg(long)]
+    stock_symbols: String,
     /// HTTP server port
     #[arg(long, default_value = "8080")]
     port: u16,
@@ -42,6 +45,7 @@ struct AppState {
     lon: String,
     api_key: String,
     stocks_api_key: String,
+    stock_symbols: String,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +97,7 @@ async fn get_stocks_bitmap(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
-    let bitmap = match fetch_stocks(&state.stocks_api_key).await {
+    let bitmap = match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
         Ok(stocks) => {
             let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
 
@@ -154,7 +158,7 @@ async fn get_stocks_svg(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch stocks data and generate SVG
-    match fetch_stocks(&state.stocks_api_key).await {
+    match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
         Ok(stocks) => {
             let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -224,7 +228,7 @@ async fn get_stocks_debug(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch stocks data, render to bitmap with dithering, and return as PNG
-    match fetch_stocks(&state.stocks_api_key).await {
+    match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
         Ok(stocks) => {
             let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
 
@@ -287,6 +291,7 @@ async fn main() {
         lon: args.lon.clone(),
         api_key: args.open_weather_key.clone(),
         stocks_api_key: args.stocks_api_key.clone(),
+        stock_symbols: args.stock_symbols.clone(),
     });
 
     let app = Router::new()
