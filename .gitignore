@@ -1,7 +1,6 @@
 /target
 .DS_Store
 *.pbm
-*.png
 
 # Arduino secrets (contains WiFi credentials)
 client/arduino_secrets.h

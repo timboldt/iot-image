@@ -10,7 +10,7 @@ The backend is currently written in Rust. The frontend currently uses the Arduin
 ## Examples
 
 ### Weather Display
-![Weather Display](assets/weather.svg)
+![Weather Display](assets/weather.png)
 
 ### Stock Charts
-![Stock Charts](assets/stocks.svg)
+![Stock Charts](assets/stocks.png)
