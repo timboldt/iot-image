@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use chrono::prelude::*;
 use chrono::Timelike;
+use reverse_geocoder::ReverseGeocoder;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -90,93 +91,24 @@ fn load_weather_icon_as_data_uri(icon_code: &str) -> Result<String, std::io::Err
 
 struct BarData {
     fill_percent: f32, // 0.0 to 100.0
-    bar_color: &'static str,
 }
 
 fn temperature_bar(temp: f32) -> BarData {
     // Map temperature range 20°F to 100°F to 0-100% fill
     let fill_percent = ((temp - 20.0) / 80.0 * 100.0).clamp(0.0, 100.0);
-
-    let bar_color = if temp < 40.0 {
-        "blue" // Freezing/Very Cold
-    } else if temp < 50.0 {
-        "rgb(128,128,255)" // Cold (will dither blue+white for light blue)
-    } else if temp < 60.0 {
-        "rgb(0,200,128)" // Cool (cyan-green, will dither green+blue)
-    } else if temp < 70.0 {
-        "green" // Comfortable
-    } else if temp < 80.0 {
-        "rgb(200,255,0)" // Mild (will dither green+yellow for yellow-green)
-    } else if temp < 90.0 {
-        "orange" // Warm (will dither red+yellow)
-    } else {
-        "red" // Hot
-    };
-
-    BarData {
-        fill_percent,
-        bar_color,
-    }
+    BarData { fill_percent }
 }
 
-fn humidity_bar(humidity: i32, temp: f32) -> BarData {
+fn humidity_bar(humidity: i32, _temp: f32) -> BarData {
     // Fill percent is directly proportional to humidity
     let fill_percent = humidity.clamp(0, 100) as f32;
-
-    let bar_color = if humidity < 20 {
-        "orange" // Very dry (will dither red+yellow)
-    } else if humidity < 35 {
-        "yellow" // Dry
-    } else if humidity < 50 {
-        "rgb(0,200,128)" // Comfortable-dry (cyan-green, will dither green+blue)
-    } else if humidity < 65 {
-        "green" // Comfortable
-    } else if temp >= 75.0 {
-        // High humidity with warm/hot temps - increasingly uncomfortable
-        if humidity < 80 {
-            "orange" // Humid and warm (will dither red+yellow)
-        } else {
-            "red" // Very humid and hot - uncomfortable
-        }
-    } else {
-        // High humidity but cooler temps
-        if humidity < 80 {
-            "rgb(128,128,255)" // Moist (will dither blue+white for light blue)
-        } else {
-            "blue" // Very moist
-        }
-    };
-
-    BarData {
-        fill_percent,
-        bar_color,
-    }
+    BarData { fill_percent }
 }
 
 fn wind_bar(wind_speed: f32) -> BarData {
     // Map wind speed 0-40 mph to 0-100% fill
     let fill_percent = (wind_speed / 40.0 * 100.0).clamp(0.0, 100.0);
-
-    let bar_color = if wind_speed < 3.0 {
-        "green" // Calm
-    } else if wind_speed < 8.0 {
-        "rgb(0,200,128)" // Light breeze (cyan-green, will dither green+blue)
-    } else if wind_speed < 12.0 {
-        "rgb(128,128,255)" // Gentle breeze (will dither blue+white for light blue)
-    } else if wind_speed < 18.0 {
-        "blue" // Moderate breeze
-    } else if wind_speed < 25.0 {
-        "yellow" // Windy
-    } else if wind_speed < 32.0 {
-        "orange" // Very windy (will dither red+yellow)
-    } else {
-        "red" // Storm/dangerous
-    };
-
-    BarData {
-        fill_percent,
-        bar_color,
-    }
+    BarData { fill_percent }
 }
 
 /// Fetches weather data from OpenWeatherMap One Call API (3.0)
@@ -226,12 +158,10 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push_str(r#"  <defs>"#);
     svg.push('\n');
 
-    // Temperature gradient: blue (cold) -> green (comfortable) -> red (hot)
+    // Temperature gradient: blue (cold) -> red (hot)
     svg.push_str(r#"    <linearGradient id="tempGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
     svg.push('\n');
     svg.push_str(r#"      <stop offset="0%" style="stop-color:blue;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="50%" style="stop-color:green;stop-opacity:1" />"#);
     svg.push('\n');
     svg.push_str(r#"      <stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
     svg.push('\n');
@@ -248,14 +178,22 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push_str(r#"    </linearGradient>"#);
     svg.push('\n');
 
-    // Battery gradient: red (low) -> orange (medium) -> green (full)
+    // Battery gradient: red (low) -> green (full)
     svg.push_str(r#"    <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
     svg.push('\n');
     svg.push_str(r#"      <stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
     svg.push('\n');
-    svg.push_str(r#"      <stop offset="50%" style="stop-color:orange;stop-opacity:1" />"#);
-    svg.push('\n');
     svg.push_str(r#"      <stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"    </linearGradient>"#);
+    svg.push('\n');
+
+    // Wind gradient: green (calm) -> orange (windy)
+    svg.push_str(r#"    <linearGradient id="windGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
     svg.push('\n');
     svg.push_str(r#"    </linearGradient>"#);
     svg.push('\n');
@@ -282,10 +220,13 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
-    // Latitude/Longitude
+    // City name from coordinates
+    let geocoder = ReverseGeocoder::new();
+    let coords = (weather.lat as f64, weather.lon as f64);
+    let search_result = geocoder.search(coords);
     svg.push_str(&format!(
-        r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="black">{:.4}°, {:.4}°</text>"#,
-        weather.lat, weather.lon
+        r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="black">{}</text>"#,
+        search_result.record.name
     ));
     svg.push('\n');
 
@@ -495,14 +436,29 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     ));
     svg.push('\n');
 
-    // Filled portion (inset to not cover border)
+    // Create clipPath for wind bar
+    let wind_clip_id = "windClip";
+    svg.push_str(&format!(r#"  <clipPath id="{}">"#, wind_clip_id));
+    svg.push('\n');
     svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="{}" rx="2"/>"#,
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
         170.0 + bar_inset,
         detail_y + 20.0 + bar_inset,
         wind_fill_width,
+        bar_height - bar_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
+
+    // Full-width gradient rect, clipped to fill width
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#windGradient)" clip-path="url(#{})" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 20.0 + bar_inset,
+        hum_bar_width - bar_inset * 2.0,
         bar_height - bar_inset * 2.0,
-        wind_bar.bar_color
+        wind_clip_id
     ));
     svg.push('\n');
 
