@@ -42,9 +42,15 @@ async fn fetch_series(
     limit: usize,
 ) -> Result<Vec<DataPoint>, Box<dyn std::error::Error>> {
     let url = format!(
-        "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&sort_order=desc&limit={}",
+        "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&observation_start=2020-02-01&observation_end=2020-06-01&sort_order=desc&limit={}",
         series_id, api_key, limit
     );
+
+    // Alternative test URL to fetch COVID crisis data (Feb-June 2020)
+    // let url = format!(
+    //     "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&observation_start=2020-02-01&observation_end=2020-06-01&sort_order=desc&limit={}",
+    //     series_id, api_key, limit
+    // );
 
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
@@ -713,11 +719,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         return svg;
     }
 
-    // Treasury regime thresholds: green above 4%, yellow 3-4%, red below 3%
-    let stress_threshold = 3.0;
-    let normal_threshold = 4.0;
-
-    // Calculate data range, ensuring thresholds are always visible
+    // Calculate data range
     let data_min = series
         .points
         .iter()
@@ -731,8 +733,14 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(10.0);
 
+    // Treasury regime thresholds: relative to highest value
+    // Green when close to peak, orange/red when yields drop significantly
+    let normal_threshold = data_max - 0.5; // 0.5% below peak
+    let stress_threshold = data_max - 1.0; // 1.0% below peak
+
+    // Ensure thresholds are always visible
     let min_val = data_min.min(stress_threshold);
-    let max_val = data_max.max(normal_threshold);
+    let max_val = data_max;
     let range = if max_val > min_val {
         max_val - min_val
     } else {
@@ -742,7 +750,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
     // Create gradient ID unique to this chart
     let gradient_id = format!("treasuryGradient_{}_{}", x, y);
 
-    // Create gradient: red (below 3%), orange (3-4%), green (above 4%)
+    // Create gradient: red (>1% below peak), orange (0.5-1% below peak), green (within 0.5% of peak)
     svg.push_str(&format!(
         r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
         gradient_id
