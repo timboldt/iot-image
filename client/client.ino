@@ -32,6 +32,10 @@ void setup() {
     Serial.println("\n\n=== iot-image Client Starting ===");
     Serial.printf("Compiled: %s %s\n", __DATE__, __TIME__);
 
+    // Configure ADC for battery monitoring
+    analogReadResolution(12);  // 12-bit resolution (0-4095)
+    analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);  // 11dB attenuation for up to ~3.6V input
+
     // Initialize SPI for display
     hspi.begin(EPD_SCK_PIN, -1, EPD_MOSI_PIN, -1);
 
@@ -237,16 +241,16 @@ int get_battery_percentage() {
     digitalWrite(BATTERY_ENABLE_PIN, HIGH);
     delay(10);  // Allow voltage to stabilize
 
-    // Read battery voltage from ADC
-    int adc_value = analogRead(BATTERY_ADC_PIN);
+    // Read battery voltage from ADC (returns millivolts)
+    int mv = analogReadMilliVolts(BATTERY_ADC_PIN);
 
     // Disable battery monitoring to save power
     digitalWrite(BATTERY_ENABLE_PIN, LOW);
 
-    // Convert ADC reading to voltage (ESP32 ADC is 12-bit, 0-4095)
+    // Convert to actual battery voltage
     // Voltage divider: Vbat -> R1(10k) -> ADC -> R2(10k) -> GND
-    // ADC sees Vbat/2, then multiply by 2
-    float voltage = (adc_value / 4095.0) * 3.3 * 2.0;
+    // ADC sees Vbat/2, so multiply by 2 to get actual battery voltage
+    float voltage = (mv / 1000.0) * 2.0;
 
     // Convert voltage to percentage
     // LiPo battery: 4.2V = 100%, 3.0V = 0%
@@ -258,8 +262,8 @@ int get_battery_percentage() {
     if (percentage > 100) percentage = 100;
     if (percentage < 0) percentage = 0;
 
-    Serial.printf("[Battery] ADC: %d, Voltage: %.2fV, Percentage: %d%%\n",
-                  adc_value, voltage, percentage);
+    Serial.printf("[Battery] mV: %d, Voltage: %.2fV, Percentage: %d%%\n",
+                  mv, voltage, percentage);
     return percentage;
 }
 
