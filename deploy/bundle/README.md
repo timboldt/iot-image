@@ -1,6 +1,6 @@
 # IoT Image Server Deployment
 
-This directory contains files for deploying the IoT Image Server as a systemd service on a Raspberry Pi.
+This directory contains files for deploying the IoT Image Server as a systemd service on Linux.
 
 ## Files
 
@@ -17,46 +17,39 @@ Build and deploy in one command from the server directory:
 
 ```bash
 cd server
-cross build --release --target aarch64-unknown-linux-gnu && ../deploy/deploy_server.sh
+cargo build --release && ../deploy/deploy_server.sh
 ```
 
 The deployment script will:
-- Stop the service on the Pi (if running)
-- Copy all bundle files and the binary to the Pi
-- Run the installation script
+- Stop the service (if running)
+- Copy the binary and assets to ~/bin
+- Install the systemd user service
 - Start/restart the service
 
 **Note:** The deploy script can be run from any directory - it automatically finds the project root and binary location.
 
 ### Manual Installation
 
-1. Build for Raspberry Pi (cross-compile):
+1. Build the server:
    ```bash
    cd server
-   cross build --release --target aarch64-unknown-linux-gnu
+   cargo build --release
    cd ..
    ```
 
-2. Copy the bundle to the Pi:
+2. Run the installation script:
    ```bash
-   scp -r deploy/bundle pi@pidev.local:~/
-   scp server/target/aarch64-unknown-linux-gnu/release/iot-image-server pi@pidev.local:~/bundle/
-   ```
-
-3. SSH to the Pi and run the installation script as user 'pi':
-   ```bash
-   ssh pi@pidev.local
-   cd ~/bundle
+   cd deploy/bundle
    ./install.sh
    ```
 
-4. Verify your configuration file exists:
+3. Verify your configuration file exists:
    ```bash
    cat ~/bin/env.txt
    ```
    (Note: The service expects `~/bin/env.txt` to already exist with your credentials)
 
-5. Start the service:
+4. Start the service:
    ```bash
    systemctl --user start iot-image-server
    ```
@@ -91,7 +84,7 @@ If you prefer to install manually:
 5. Enable lingering and start the service:
    ```bash
    # Enable lingering so the service runs without login
-   sudo loginctl enable-linger pi
+   sudo loginctl enable-linger $USER
 
    # Reload and enable the service
    systemctl --user daemon-reload
@@ -179,29 +172,27 @@ Simply rebuild and re-run the deployment script in one command:
 
 ```bash
 cd server
-cross build --release --target aarch64-unknown-linux-gnu && ../deploy/deploy_server.sh
+cargo build --release && ../deploy/deploy_server.sh
 ```
 
 The deployment script handles stopping, updating, and restarting the service automatically.
 
 ### Manual Update
 
-1. Build and copy the new binary from your workstation:
+1. Build the new binary:
    ```bash
-   # On workstation
    cd server
-   cross build --release --target aarch64-unknown-linux-gnu
-   scp target/aarch64-unknown-linux-gnu/release/iot-image-server pi@pidev.local:~/bundle/
+   cargo build --release
    ```
 
-2. On the Pi, stop the service:
+2. Stop the service:
    ```bash
    systemctl --user stop iot-image-server
    ```
 
 3. Replace the binary:
    ```bash
-   cp ~/bundle/iot-image-server ~/bin/
+   cp target/release/iot-image-server ~/bin/
    ```
 
 4. Start the service:
@@ -209,11 +200,9 @@ The deployment script handles stopping, updating, and restarting the service aut
    systemctl --user start iot-image-server
    ```
 
-Or simply re-run the installation script:
+Or simply re-run the deployment script:
 ```bash
-cd ~/bundle
-./install.sh
-systemctl --user restart iot-image-server
+../deploy/deploy_server.sh
 ```
 
 ## Uninstallation
@@ -232,7 +221,7 @@ rm ~/.config/systemd/user/iot-image-server.service
 systemctl --user daemon-reload
 
 # Optionally disable lingering if you don't need it for other services
-sudo loginctl disable-linger pi
+sudo loginctl disable-linger $USER
 
 # Remove the installation directory (keep env.txt if you want to preserve credentials)
 rm -f ~/bin/iot-image-server
@@ -251,7 +240,7 @@ Common issues:
 - Missing or incorrect API credentials in `env.txt`
 - Port 8080 already in use (change PORT in `env.txt`)
 - Binary not executable (run `chmod +x ~/bin/iot-image-server`)
-- Lingering not enabled (run `sudo loginctl enable-linger pi`)
+- Lingering not enabled (run `sudo loginctl enable-linger $USER`)
 - Environment file not found (ensure `~/bin/env.txt` exists)
 
 ### Connection refused
@@ -277,7 +266,7 @@ curl "https://api.openweathermap.org/data/3.0/onecall?lat=37.7749&lon=-122.4194&
 ## Security Notes
 
 The systemd user service includes several security hardening features:
-- Runs as the pi user (no root required)
+- Runs as your user (no root required)
 - No new privileges
 - Private /tmp directory
 - Protected system directories

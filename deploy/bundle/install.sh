@@ -4,9 +4,9 @@ set -e
 echo "=== IoT Image Server Installation ==="
 echo
 
-# Ensure we're running as the pi user
-if [ "$(whoami)" != "pi" ]; then
-    echo "Error: Please run this script as the 'pi' user (not as root)"
+# Ensure we're not running as root
+if [ "$(whoami)" = "root" ]; then
+    echo "Error: Please run this script as a regular user (not as root)"
     echo "Usage: ./install.sh"
     exit 1
 fi
@@ -58,10 +58,11 @@ mkdir -p "${USER_SYSTEMD_DIR}"
 echo "Installing systemd user service..."
 cp "${SERVICE_NAME}.service" "${USER_SYSTEMD_DIR}/${SERVICE_NAME}.service"
 
-# Enable lingering for the pi user so service runs without login
-echo "Enabling lingering for user 'pi'..."
-if ! loginctl show-user pi | grep -q "Linger=yes"; then
-    sudo loginctl enable-linger pi
+# Enable lingering for the current user so service runs without login
+CURRENT_USER="$(whoami)"
+echo "Enabling lingering for user '${CURRENT_USER}'..."
+if ! loginctl show-user "${CURRENT_USER}" | grep -q "Linger=yes"; then
+    sudo loginctl enable-linger "${CURRENT_USER}"
     echo "Lingering enabled (requires sudo)"
 else
     echo "Lingering already enabled"

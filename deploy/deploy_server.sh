@@ -5,65 +5,100 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Configuration
-PI_HOST="${PI_HOST:-pidev.local}"
-PI_USER="${PI_USER:-pi}"
-REMOTE_DIR="~/bundle"
-SERVER_BINARY="${PROJECT_ROOT}/server/target/aarch64-unknown-linux-gnu/release/iot-image-server"
+# Configuration for local deployment
+INSTALL_DIR="${HOME}/bin"
+SERVER_BINARY="${PROJECT_ROOT}/server/target/release/iot-image-server"
 BUNDLE_DIR="${SCRIPT_DIR}/bundle"
+SERVICE_NAME="iot-image-server"
+USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
-echo "=== IoT Image Server Deployment ==="
-echo "Target: ${PI_USER}@${PI_HOST}"
+echo "=== IoT Image Server Local Deployment ==="
+echo "Target: localhost"
 echo
 
 # Check if the binary exists
 if [ ! -f "${SERVER_BINARY}" ]; then
     echo "Error: Server binary not found at ${SERVER_BINARY}"
     echo "Please build the server first:"
-    echo "  cd server && cross build --release --target aarch64-unknown-linux-gnu"
+    echo "  cd server && cargo build --release"
     exit 1
 fi
 
-# Step 1: Stop the service on the Pi (if it exists)
-echo "Step 1: Stopping service on the Pi (if running)..."
-ssh "${PI_USER}@${PI_HOST}" "systemctl --user stop iot-image-server 2>/dev/null || true"
+# Step 1: Stop the service (if it exists)
+echo "Step 1: Stopping service (if running)..."
+systemctl --user stop iot-image-server 2>/dev/null || true
 echo "  Service stopped (or wasn't running)"
 echo
 
-# Step 2: Copy bundle files and binary to the Pi
-echo "Step 2: Copying files to ${PI_HOST}..."
-echo "  Creating remote bundle directory..."
-ssh "${PI_USER}@${PI_HOST}" "mkdir -p ${REMOTE_DIR}"
+# Step 2: Create installation directory
+echo "Step 2: Installing files..."
+echo "  Creating installation directory: ${INSTALL_DIR}"
+mkdir -p "${INSTALL_DIR}"
 
-echo "  Copying bundle files..."
-scp -r "${BUNDLE_DIR}"/* "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
+# Step 3: Copy binary
+echo "  Installing binary..."
+cp "${SERVER_BINARY}" "${INSTALL_DIR}/iot-image-server"
+chmod +x "${INSTALL_DIR}/iot-image-server"
 
-echo "  Copying server binary..."
-scp "${SERVER_BINARY}" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/iot-image-server"
+# Step 4: Copy assets
+echo "  Installing assets..."
+if [ -d "${PROJECT_ROOT}/assets" ]; then
+    cp -r "${PROJECT_ROOT}/assets" "${INSTALL_DIR}/"
+else
+    echo "WARNING: Assets directory not found. Weather icons may not display correctly."
+fi
 
-echo "  Copying assets directory..."
-rsync -av "${PROJECT_ROOT}/assets" "${PI_USER}@${PI_HOST}:${REMOTE_DIR}/"
-echo "  Files copied successfully"
-echo
+# Step 5: Check for environment file
+if [ ! -f "${INSTALL_DIR}/env.txt" ]; then
+    echo ""
+    echo "WARNING: Environment file not found at ${INSTALL_DIR}/env.txt"
+    echo "Creating example env.txt from template..."
+    if [ -f "${BUNDLE_DIR}/env.txt.example" ]; then
+        cp "${BUNDLE_DIR}/env.txt.example" "${INSTALL_DIR}/env.txt"
+        echo "Please edit ${INSTALL_DIR}/env.txt with your API keys before starting the service."
+    fi
+    echo
+else
+    echo "  Environment file found at ${INSTALL_DIR}/env.txt"
+fi
 
-# Step 3: Run the installation script and restart the service
-echo "Step 3: Installing and restarting service..."
-ssh "${PI_USER}@${PI_HOST}" "cd ${REMOTE_DIR} && ./install.sh"
-echo
+# Step 6: Install systemd user service
+echo "Step 3: Installing systemd user service..."
+mkdir -p "${USER_SYSTEMD_DIR}"
+cp "${BUNDLE_DIR}/${SERVICE_NAME}.service" "${USER_SYSTEMD_DIR}/${SERVICE_NAME}.service"
 
+# Step 7: Enable lingering so service runs without login
+echo "  Enabling lingering for user '${USER}'..."
+if ! loginctl show-user "${USER}" 2>/dev/null | grep -q "Linger=yes"; then
+    sudo loginctl enable-linger "${USER}"
+    echo "  Lingering enabled (required sudo)"
+else
+    echo "  Lingering already enabled"
+fi
+
+# Step 8: Reload systemd user daemon
+echo "  Reloading systemd user daemon..."
+systemctl --user daemon-reload
+
+# Step 9: Enable service
+echo "  Enabling service to start on boot..."
+systemctl --user enable "${SERVICE_NAME}"
+
+# Step 10: Start the service
 echo "Step 4: Starting the service..."
-ssh "${PI_USER}@${PI_HOST}" "systemctl --user start iot-image-server"
+systemctl --user start iot-image-server
 echo
 
 # Check service status
 echo "=== Deployment Complete ==="
 echo
 echo "Checking service status..."
-ssh "${PI_USER}@${PI_HOST}" "systemctl --user status iot-image-server --no-pager" || true
+systemctl --user status iot-image-server --no-pager || true
 echo
 echo "To view live logs:"
-echo "  ssh ${PI_USER}@${PI_HOST} journalctl --user -u iot-image-server -f"
+echo "  journalctl --user -u iot-image-server -f"
 echo
 echo "The server should be available at:"
-echo "  http://${PI_HOST}:8080/weather/seed-e1002.bin"
+echo "  http://localhost:8080/weather/seed-e1002.bin"
+echo "  http://`hostname`.local:8080/weather/seed-e1002.bin"
 echo

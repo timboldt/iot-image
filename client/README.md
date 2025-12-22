@@ -13,12 +13,11 @@ Arduino/ESP32-S3 client for the iot-image system. Runs on Seed Studio reTerminal
 
 ### 1. Configure WiFi & Server
 
-Edit `config.h`:
+Edit `arduino-secrets.h`:
 ```c
-#define WIFI_SSID "your_ssid"
-#define WIFI_PASSWORD "your_password"
-#define SERVER_HOST "raspberrypi.local"  // or IP address
-#define SERVER_PORT 8080
+#define SECRET_SSID "your_ssid"
+#define SECRET_PASS "your_password"
+#define SECRET_HOST "your_server_host"
 ```
 
 ### 2. Install Arduino CLI
@@ -138,7 +137,7 @@ Serial output provides detailed status:
 [WiFi] Connecting to WiFi...
 [WiFi] Connected!
 [WiFi] IP address: 192.168.1.100
-[Download] Fetching: http://pidev.local:8080/weather/seed-e1002.bin
+[Download] Fetching: http://<server>:8080/weather/seed-e1002.bin
 [Download] HTTP response code: 200
 [Download] Content-Length: 384008 bytes
 [Download] Bitmap download complete

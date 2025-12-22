@@ -1,0 +1,1 @@
+arduino-cli compile -v --fqbn esp32:esp32:esp32s3 . && arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32s3 . && arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200 --fqbn esp32:esp32:esp32s3

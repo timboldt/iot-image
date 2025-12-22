@@ -8,7 +8,7 @@
 #define WIFI_PASSWORD SECRET_PASS
 
 // Server configuration
-#define SERVER_HOST "pidev.local"
+#define SERVER_HOST SECRET_HOST
 #define SERVER_PORT 8080
 // IMAGE_ENDPOINT is now dynamic based on button press:
 //   - Button 1 (KEY0): weather/seed-e1002.bin
