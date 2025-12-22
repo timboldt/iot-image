@@ -57,6 +57,7 @@ struct AppState {
 #[derive(Deserialize)]
 struct QueryArgs {
     battery_pct: Option<u8>,
+    show_alerts: Option<bool>,
 }
 
 async fn get_weather_bitmap(
@@ -66,7 +67,7 @@ async fn get_weather_bitmap(
     // Fetch weather data and generate SVG
     let bitmap = match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct, query.show_alerts);
 
             // Write SVG to temporary file
             let temp_svg_path = "/tmp/weather.svg";
@@ -144,7 +145,7 @@ async fn get_weather_svg(
     // Fetch weather data and generate SVG
     match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct, query.show_alerts);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
         Err(e) => {
@@ -188,7 +189,7 @@ async fn get_weather_debug(
     // Fetch weather data, render to bitmap with dithering, and return as PNG
     match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct, query.show_alerts);
 
             // Write SVG to temporary file
             let temp_svg_path = "/tmp/weather_debug.svg";
