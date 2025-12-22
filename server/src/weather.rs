@@ -618,29 +618,46 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
         }
 
         // Temperature bar indicator
-        let temp_bar = temperature_bar(day.temp.day);
-        let forecast_bar_width = 120.0;
+        // Calculate positions for min and max temperatures on the bar
+        let min_bar = temperature_bar(day.temp.min);
+        let max_bar = temperature_bar(day.temp.max);
+        let forecast_bar_width = 125.0; // 5 pixels longer
         let forecast_bar_height = 16.0;
         let forecast_inset = 2.0;
-        let forecast_fill_width =
-            (forecast_bar_width - forecast_inset * 2.0) * (temp_bar.fill_percent / 100.0);
 
-        // Background rectangle
+        // Calculate the fill from min to max temperature
+        let available_width = forecast_bar_width - forecast_inset * 2.0;
+        let available_height = forecast_bar_height - forecast_inset * 2.0;
+        let mut fill_start_offset = available_width * (min_bar.fill_percent / 100.0);
+        let mut fill_width =
+            available_width * ((max_bar.fill_percent - min_bar.fill_percent) / 100.0);
+
+        // Ensure fill_width is at least as wide as it is tall (minimum square)
+        if fill_width < available_height {
+            let difference = available_height - fill_width;
+            // Adjust start position by half the difference to center it
+            fill_start_offset = (fill_start_offset - difference / 2.0)
+                .max(0.0)
+                .min(available_width - available_height);
+            fill_width = available_height;
+        }
+
+        // Background rectangle (moved up 5 pixels: y + 25.0 instead of y + 30.0)
         svg.push_str(&format!(
             r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-            right_x, y + 30.0, forecast_bar_width, forecast_bar_height
+            right_x, y + 22.0, forecast_bar_width, forecast_bar_height
         ));
         svg.push('\n');
 
-        // ClipPath for this forecast day's temp bar
+        // ClipPath for this forecast day's temp bar (fill only from min to max)
         let clip_id = format!("forecastTempClip{}", idx);
         svg.push_str(&format!(r#"  <clipPath id="{}">"#, clip_id));
         svg.push('\n');
         svg.push_str(&format!(
             r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-            right_x + forecast_inset,
-            y + 30.0 + forecast_inset,
-            forecast_fill_width,
+            right_x + forecast_inset + fill_start_offset,
+            y + 22.0 + forecast_inset,
+            fill_width,
             forecast_bar_height - forecast_inset * 2.0
         ));
         svg.push('\n');
@@ -651,7 +668,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
         svg.push_str(&format!(
             r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#tempGradient)" clip-path="url(#{})" rx="1"/>"#,
             right_x + forecast_inset,
-            y + 30.0 + forecast_inset,
+            y + 22.0 + forecast_inset,
             forecast_bar_width - forecast_inset * 2.0,
             forecast_bar_height - forecast_inset * 2.0,
             clip_id
