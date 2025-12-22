@@ -12,9 +12,9 @@
       y2="153.5"
       gradientUnits="userSpaceOnUse"
     >
-      <stop offset="0" stop-color="#d4d7dd" />
-      <stop offset=".5" stop-color="#d4d7dd" />
-      <stop offset="1" stop-color="#bec1c6" />
+      <stop offset="0" stop-color="#FF0000" />
+      <stop offset=".5" stop-color="#FF0000" />
+      <stop offset="1" stop-color="#FF0000" />
     </linearGradient>
     <linearGradient
       xlink:href="#a"
@@ -45,7 +45,7 @@
   </defs>
   <use xlink:href="#c" width="348" height="240" transform="translate(82 136)" />
   <path
-    fill="#374251"
+    fill="black"
     d="M379 344h-18.9v-45h-17.8v-12.6h3q7.8 0 12.3-3.4 4.3-3.1 5.6-10.2l.2-.8H379Zm46.7 0h-19v-45H389v-12.6h3q7.8 0 12.3-3.4 4.3-3.1 5.6-10.2l.2-.8h15.6Z"
   />
 </svg>

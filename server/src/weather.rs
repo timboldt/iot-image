@@ -111,6 +111,34 @@ fn wind_bar(wind_speed: f32) -> BarData {
     BarData { fill_percent }
 }
 
+/// Converts wind speed in mph to Beaufort scale (0-12)
+fn wind_speed_to_beaufort(wind_speed: f32) -> u8 {
+    match wind_speed as i32 {
+        0 => 0,
+        1..=3 => 1,
+        4..=7 => 2,
+        8..=12 => 3,
+        13..=18 => 4,
+        19..=24 => 5,
+        25..=31 => 6,
+        32..=38 => 7,
+        39..=46 => 8,
+        47..=54 => 9,
+        55..=63 => 10,
+        64..=72 => 11,
+        _ => 12,
+    }
+}
+
+/// Loads a Beaufort icon and returns its content as a base64-encoded data URI
+fn load_beaufort_icon_as_data_uri(beaufort: u8) -> Result<String, std::io::Error> {
+    let icon_filename = format!("wind-beaufort-{}.svg", beaufort);
+    let icon_path = format!("assets/static/fill-svg-static/{}", icon_filename);
+    let svg_content = fs::read(&icon_path)?;
+    let encoded = general_purpose::STANDARD.encode(&svg_content);
+    Ok(format!("data:image/svg+xml;base64,{}", encoded))
+}
+
 /// Fetches weather data from OpenWeatherMap One Call API (3.0)
 ///
 /// # Arguments
@@ -580,9 +608,9 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
             // Embed small weather icon as a data URI
             if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
                 svg.push_str(&format!(
-                    r#"  <image x="{}" y="{}" width="100" height="100" href="{}"/>"#,
+                    r#"  <image x="{}" y="{}" width="80" height="80" href="{}"/>"#,
                     right_x + 150.0,
-                    y - 30.0,
+                    y - 20.0,
                     data_uri
                 ));
                 svg.push('\n');
@@ -629,6 +657,18 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
             clip_id
         ));
         svg.push('\n');
+
+        // Wind indicator (Beaufort scale icon, color-coded by danger level)
+        let beaufort = wind_speed_to_beaufort(day.wind_speed);
+        if let Ok(beaufort_icon_uri) = load_beaufort_icon_as_data_uri(beaufort) {
+            svg.push_str(&format!(
+                r#"  <image x="{}" y="{}" width="80" height="80" href="{}"/>"#,
+                right_x + 220.0,
+                y - 10.0,
+                beaufort_icon_uri
+            ));
+            svg.push('\n');
+        }
     }
 
     // Footer with battery and last updated
