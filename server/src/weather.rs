@@ -20,6 +20,8 @@ pub struct WeatherData {
 pub struct WeatherAlert {
     pub event: String,
     pub description: String,
+    pub start: i64,
+    pub end: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -195,15 +197,10 @@ pub async fn fetch_weather(
 /// # Arguments
 /// * `weather` - The weather data to display
 /// * `battery_pct` - Optional battery percentage to display
-/// * `show_alerts` - Optional flag to control alert display (default: true)
 ///
 /// # Returns
 /// A String containing the SVG markup
-pub fn generate_weather_svg(
-    weather: &WeatherData,
-    battery_pct: Option<u8>,
-    show_alerts: Option<bool>,
-) -> String {
+pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> String {
     // Create timezone offset from the weather data
     let tz_offset = chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap();
 
@@ -562,159 +559,169 @@ pub fn generate_weather_svg(
         .unwrap()
         .with_timezone(&tz_offset);
 
-    // Conditional rendering: show cloudiness/UVI/sunrise/sunset OR alerts
-    let display_alerts = show_alerts.unwrap_or(true) && !weather.alerts.is_empty();
+    // Always show cloudiness/UVI/sunrise/sunset, plus warning titles if present
 
-    if !display_alerts {
-        // Cloudiness bar
-        svg.push_str(&format!(
+    // Cloudiness bar
+    svg.push_str(&format!(
             r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Cloudiness</text>"#,
             detail_y + 70.0
-        ));
-        svg.push('\n');
+    ));
+    svg.push('\n');
 
-        let clouds_value = today.clouds.unwrap_or(0);
-        let clouds_bar = cloudiness_bar(clouds_value);
-        let clouds_fill_width =
-            (hum_bar_width - bar_inset * 2.0) * (clouds_bar.fill_percent / 100.0);
+    let clouds_value = today.clouds.unwrap_or(0);
+    let clouds_bar = cloudiness_bar(clouds_value);
+    let clouds_fill_width = (hum_bar_width - bar_inset * 2.0) * (clouds_bar.fill_percent / 100.0);
 
-        // Background rectangle
-        svg.push_str(&format!(
-            r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-            detail_y + 55.0, hum_bar_width, bar_height
-        ));
-        svg.push('\n');
+    // Background rectangle
+    svg.push_str(&format!(
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
+        detail_y + 55.0, hum_bar_width, bar_height
+    ));
+    svg.push('\n');
 
-        // ClipPath
-        let clouds_clip_id = "cloudsClip";
-        svg.push_str(&format!(r#"  <clipPath id="{}">"#, clouds_clip_id));
-        svg.push('\n');
-        svg.push_str(&format!(
-            r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-            170.0 + bar_inset,
-            detail_y + 55.0 + bar_inset,
-            clouds_fill_width,
-            bar_height - bar_inset * 2.0
-        ));
-        svg.push('\n');
-        svg.push_str(r#"  </clipPath>"#);
-        svg.push('\n');
+    // ClipPath
+    let clouds_clip_id = "cloudsClip";
+    svg.push_str(&format!(r#"  <clipPath id="{}">"#, clouds_clip_id));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 55.0 + bar_inset,
+        clouds_fill_width,
+        bar_height - bar_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
 
-        // Gradient rect with clipping
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#cloudinessGradient)" clip-path="url(#{})" rx="2"/>"#,
-            170.0 + bar_inset,
-            detail_y + 55.0 + bar_inset,
-            hum_bar_width - bar_inset * 2.0,
-            bar_height - bar_inset * 2.0,
-            clouds_clip_id
-        ));
-        svg.push('\n');
+    // Gradient rect with clipping
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#cloudinessGradient)" clip-path="url(#{})" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 55.0 + bar_inset,
+        hum_bar_width - bar_inset * 2.0,
+        bar_height - bar_inset * 2.0,
+        clouds_clip_id
+    ));
+    svg.push('\n');
 
-        // UVI bar
-        svg.push_str(&format!(
-            r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">UV Index</text>"#,
-            detail_y + 105.0
-        ));
-        svg.push('\n');
+    // UVI bar
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">UV Index</text>"#,
+        detail_y + 105.0
+    ));
+    svg.push('\n');
 
-        let uvi_value = today.uvi.unwrap_or(0.0);
-        let uvi_bar_data = uvi_bar(uvi_value);
-        let uvi_fill_width =
-            (hum_bar_width - bar_inset * 2.0) * (uvi_bar_data.fill_percent / 100.0);
+    let uvi_value = today.uvi.unwrap_or(0.0);
+    let uvi_bar_data = uvi_bar(uvi_value);
+    let uvi_fill_width = (hum_bar_width - bar_inset * 2.0) * (uvi_bar_data.fill_percent / 100.0);
 
-        // Background rectangle
-        svg.push_str(&format!(
-            r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-            detail_y + 90.0, hum_bar_width, bar_height
-        ));
-        svg.push('\n');
+    // Background rectangle
+    svg.push_str(&format!(
+        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
+        detail_y + 90.0, hum_bar_width, bar_height
+    ));
+    svg.push('\n');
 
-        // ClipPath
-        let uvi_clip_id = "uviClip";
-        svg.push_str(&format!(r#"  <clipPath id="{}">"#, uvi_clip_id));
-        svg.push('\n');
-        svg.push_str(&format!(
-            r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-            170.0 + bar_inset,
-            detail_y + 90.0 + bar_inset,
-            uvi_fill_width,
-            bar_height - bar_inset * 2.0
-        ));
-        svg.push('\n');
-        svg.push_str(r#"  </clipPath>"#);
-        svg.push('\n');
+    // ClipPath
+    let uvi_clip_id = "uviClip";
+    svg.push_str(&format!(r#"  <clipPath id="{}">"#, uvi_clip_id));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 90.0 + bar_inset,
+        uvi_fill_width,
+        bar_height - bar_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
 
-        // Gradient rect with clipping
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#uviGradient)" clip-path="url(#{})" rx="2"/>"#,
-            170.0 + bar_inset,
-            detail_y + 90.0 + bar_inset,
-            hum_bar_width - bar_inset * 2.0,
-            bar_height - bar_inset * 2.0,
-            uvi_clip_id
-        ));
-        svg.push('\n');
+    // Gradient rect with clipping
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#uviGradient)" clip-path="url(#{})" rx="2"/>"#,
+        170.0 + bar_inset,
+        detail_y + 90.0 + bar_inset,
+        hum_bar_width - bar_inset * 2.0,
+        bar_height - bar_inset * 2.0,
+        uvi_clip_id
+    ));
+    svg.push('\n');
 
-        // Sunrise text (moved down)
-        svg.push_str(&format!(
-            r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Sunrise: {}</text>"#,
-            detail_y + 160.0, sunrise_time.format("%l:%M %P")
-        ));
-        svg.push('\n');
+    // Sunrise text (moved down)
+    svg.push_str(&format!(
+        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Sunrise: {}</text>"#,
+        detail_y + 160.0, sunrise_time.format("%l:%M %P")
+    ));
+    svg.push('\n');
 
-        // Sunset text (moved down)
-        svg.push_str(&format!(
-            r#"  <text x="280" y="{}" font-family="Arial" font-size="20" fill="black">Sunset: {}</text>"#,
-            detail_y + 160.0, sunset_time.format("%l:%M %P")
-        ));
-        svg.push('\n');
-    } else {
-        // Weather Alerts (shown instead of cloudiness/UVI/sunrise/sunset)
-        let alert_y = detail_y + 70.0;
-        svg.push_str(&format!(
-            r#"  <text x="40" y="{}" font-family="Arial" font-size="18" font-weight="bold" fill="red">ALERTS:</text>"#,
-            alert_y
-        ));
-        svg.push('\n');
+    // Sunset text (moved down)
+    svg.push_str(&format!(
+        r#"  <text x="280" y="{}" font-family="Arial" font-size="20" fill="black">Sunset: {}</text>"#,
+        detail_y + 160.0, sunset_time.format("%l:%M %P")
+    ));
+    svg.push('\n');
 
-        let mut current_y = alert_y + 25.0;
+    // Weather warning titles (if any)
+    if !weather.alerts.is_empty() {
+        let mut alert_y = detail_y + 190.0;
         for alert in &weather.alerts {
-            // Alert event name
+            let start_time = chrono::DateTime::from_timestamp(alert.start, 0)
+                .unwrap()
+                .with_timezone(&tz_offset);
+            let mut end_time = chrono::DateTime::from_timestamp(alert.end, 0)
+                .unwrap()
+                .with_timezone(&tz_offset);
+
+            // Round start down (use hour as-is), round end up (add hour if has minutes)
+            let start_hour = start_time.hour();
+            if end_time.minute() > 0 || end_time.second() > 0 {
+                end_time = end_time + chrono::Duration::hours(1);
+            }
+            let end_hour = end_time.hour();
+
+            // Convert to 12-hour format with am/pm
+            let (start_12h, start_ampm) = if start_hour == 0 {
+                (12, "am")
+            } else if start_hour < 12 {
+                (start_hour, "am")
+            } else if start_hour == 12 {
+                (12, "pm")
+            } else {
+                (start_hour - 12, "pm")
+            };
+
+            let (end_12h, end_ampm) = if end_hour == 0 {
+                (12, "am")
+            } else if end_hour < 12 {
+                (end_hour, "am")
+            } else if end_hour == 12 {
+                (12, "pm")
+            } else {
+                (end_hour - 12, "pm")
+            };
+
+            let time_range = format!(
+                "({}/{} {}{} - {}/{} {}{})",
+                start_time.month(), start_time.day(), start_12h, start_ampm,
+                end_time.month(), end_time.day(), end_12h, end_ampm
+            );
+
+            // Event name in bold red
             svg.push_str(&format!(
-                r#"  <text x="40" y="{}" font-family="Arial" font-size="16" font-weight="bold" fill="black">{}</text>"#,
-                current_y, alert.event
+                r#"  <text x="40" y="{}" font-family="Arial" font-size="16" font-weight="bold" fill="red">{}</text>"#,
+                alert_y, alert.event
             ));
             svg.push('\n');
-            current_y += 20.0;
 
-            // Alert description (wrap at ~60 characters)
-            let words: Vec<&str> = alert.description.split_whitespace().collect();
-            let mut line = String::new();
-            for word in words {
-                if line.len() + word.len() + 1 > 60 {
-                    svg.push_str(&format!(
-                        r#"  <text x="40" y="{}" font-family="Arial" font-size="14" fill="black">{}</text>"#,
-                        current_y, line.trim()
-                    ));
-                    svg.push('\n');
-                    current_y += 18.0;
-                    line = String::from(word);
-                } else {
-                    if !line.is_empty() {
-                        line.push(' ');
-                    }
-                    line.push_str(word);
-                }
-            }
-            if !line.is_empty() {
-                svg.push_str(&format!(
-                    r#"  <text x="40" y="{}" font-family="Arial" font-size="14" fill="black">{}</text>"#,
-                    current_y, line.trim()
-                ));
-                svg.push('\n');
-                current_y += 25.0;
-            }
+            // Time range in regular black
+            svg.push_str(&format!(
+                r#"  <text x="260" y="{}" font-family="Arial" font-size="16" fill="black">{}</text>"#,
+                alert_y, time_range
+            ));
+            svg.push('\n');
+            alert_y += 18.0;
         }
     }
 
@@ -848,54 +855,52 @@ pub fn generate_weather_svg(
     // Footer with battery and last updated
     let footer_y = 470;
 
-    if !display_alerts {
-        // Battery bar (if provided) - now on the left
-        let pct = battery_pct.unwrap_or(50);
-        let battery_bar_width = 100.0;
-        let battery_bar_height = 12.0;
-        let battery_x = 75.0;
-        let battery_y = footer_y as f32 - 10.0;
-        let battery_inset = 2.0;
-        let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
+    // Battery bar (if provided) - now on the left
+    let pct = battery_pct.unwrap_or(50);
+    let battery_bar_width = 100.0;
+    let battery_bar_height = 12.0;
+    let battery_x = 75.0;
+    let battery_y = footer_y as f32 - 10.0;
+    let battery_inset = 2.0;
+    let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
 
-        // Label
-        svg.push_str(&format!(
-            r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
-            footer_y
-        ));
-        svg.push('\n');
+    // Label
+    svg.push_str(&format!(
+        r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
+        footer_y
+    ));
+    svg.push('\n');
 
-        // Background (container) rectangle
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
-            battery_x, battery_y, battery_bar_width, battery_bar_height
-        ));
-        svg.push('\n');
+    // Background (container) rectangle
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
+        battery_x, battery_y, battery_bar_width, battery_bar_height
+    ));
+    svg.push('\n');
 
-        // ClipPath for battery bar
-        svg.push_str(r#"  <clipPath id="batteryClip">"#);
-        svg.push('\n');
-        svg.push_str(&format!(
-            r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_fill_width,
-            battery_bar_height - battery_inset * 2.0
-        ));
-        svg.push('\n');
-        svg.push_str(r#"  </clipPath>"#);
-        svg.push('\n');
+    // ClipPath for battery bar
+    svg.push_str(r#"  <clipPath id="batteryClip">"#);
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_fill_width,
+        battery_bar_height - battery_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
 
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_bar_width - battery_inset * 2.0,
-            battery_bar_height - battery_inset * 2.0
-        ));
-        svg.push('\n');
-    }
+    // Full-width gradient rect, clipped
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_bar_width - battery_inset * 2.0,
+        battery_bar_height - battery_inset * 2.0
+    ));
+    svg.push('\n');
 
     // Last updated timestamp - now on the right
     let now = Local::now();
