@@ -1,4 +1,4 @@
-This is an experiment in AI-generated code.
+This is an experiment in (mostly) AI-generated code.
 
 It consists of:
 
