@@ -57,6 +57,8 @@ struct AppState {
 #[derive(Deserialize)]
 struct QueryArgs {
     battery_pct: Option<u8>,
+    date: Option<String>,    // Optional end date in YYYYMMDD format
+    duration: Option<usize>, // Optional duration in days
 }
 
 async fn get_weather_bitmap(
@@ -282,7 +284,8 @@ async fn get_fred_bitmap(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch FRED data and generate SVG
-    let bitmap = match fetch_fred(&state.fred_api_key).await {
+    let bitmap = match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await
+    {
         Ok(fred) => {
             let svg_content = generate_fred_svg(&fred, query.battery_pct);
 
@@ -321,7 +324,7 @@ async fn get_fred_svg(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch FRED data and generate SVG
-    match fetch_fred(&state.fred_api_key).await {
+    match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await {
         Ok(fred) => {
             let svg_content = generate_fred_svg(&fred, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -343,7 +346,7 @@ async fn get_fred_debug(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     // Fetch FRED data, render to bitmap with dithering, and return as PNG
-    match fetch_fred(&state.fred_api_key).await {
+    match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await {
         Ok(fred) => {
             let svg_content = generate_fred_svg(&fred, query.battery_pct);
 

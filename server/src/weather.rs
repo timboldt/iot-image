@@ -677,7 +677,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
             // Round start down (use hour as-is), round end up (add hour if has minutes)
             let start_hour = start_time.hour();
             if end_time.minute() > 0 || end_time.second() > 0 {
-                end_time = end_time + chrono::Duration::hours(1);
+                end_time += chrono::Duration::hours(1);
             }
             let end_hour = end_time.hour();
 
@@ -704,8 +704,14 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
 
             let time_range = format!(
                 "({}/{} {}{} - {}/{} {}{})",
-                start_time.month(), start_time.day(), start_12h, start_ampm,
-                end_time.month(), end_time.day(), end_12h, end_ampm
+                start_time.month(),
+                start_time.day(),
+                start_12h,
+                start_ampm,
+                end_time.month(),
+                end_time.day(),
+                end_12h,
+                end_ampm
             );
 
             // Event name in bold red

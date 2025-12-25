@@ -1,4 +1,4 @@
-use chrono::{Local, Timelike};
+use chrono::{Local, NaiveDate, Timelike};
 use serde::Deserialize;
 
 // FRED API response structures
@@ -34,23 +34,35 @@ pub struct FredData {
     pub sp500: SeriesData,
     pub credit_spread: SeriesData,
     pub treasury_10y: SeriesData,
+    pub end_date: String,
+    pub duration: usize,
 }
 
 async fn fetch_series(
     api_key: &str,
     series_id: &str,
-    limit: usize,
+    end_date: Option<&str>,
+    duration: usize,
 ) -> Result<Vec<DataPoint>, Box<dyn std::error::Error>> {
-    let url = format!(
-        "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&sort_order=desc&limit={}",
-        series_id, api_key, limit
-    );
+    let url = if let Some(end) = end_date {
+        // Parse end date from YYYYMMDD format
+        let end_date = NaiveDate::parse_from_str(end, "%Y%m%d")
+            .map_err(|e| format!("Invalid date format. Use YYYYMMDD: {}", e))?;
 
-    // Alternative test URL to fetch COVID crisis data (Feb-June 2020)
-    // let url = format!(
-    //     "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&observation_start=2020-02-01&observation_end=2020-06-01&sort_order=desc&limit={}",
-    //     series_id, api_key, limit
-    // );
+        // Calculate start date
+        let start_date = end_date - chrono::Duration::days(duration as i64);
+
+        format!(
+            "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&observation_start={}&observation_end={}&sort_order=desc",
+            series_id, api_key, start_date.format("%Y-%m-%d"), end_date.format("%Y-%m-%d")
+        )
+    } else {
+        // Default: fetch last N days
+        format!(
+            "https://api.stlouisfed.org/fred/series/observations?series_id={}&api_key={}&file_type=json&sort_order=desc&limit={}",
+            series_id, api_key, duration
+        )
+    };
 
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
@@ -81,15 +93,29 @@ async fn fetch_series(
 ///
 /// # Arguments
 /// * `api_key` - FRED API key (get one free at https://fred.stlouisfed.org/docs/api/api_key.html)
+/// * `end_date` - Optional end date in YYYYMMDD format (defaults to today)
+/// * `duration` - Optional duration in days (defaults to 365)
 ///
 /// # Returns
 /// Result containing FredData on success, or error message on failure
-pub async fn fetch_fred(api_key: &str) -> Result<FredData, Box<dyn std::error::Error>> {
-    // Fetch last 120 days of data for each series
-    let vix = fetch_series(api_key, "VIXCLS", 120).await?;
-    let sp500 = fetch_series(api_key, "SP500", 120).await?;
-    let credit_spread = fetch_series(api_key, "BAMLH0A0HYM2", 120).await?;
-    let treasury_10y = fetch_series(api_key, "DGS10", 120).await?;
+pub async fn fetch_fred(
+    api_key: &str,
+    end_date: Option<&str>,
+    duration: Option<usize>,
+) -> Result<FredData, Box<dyn std::error::Error>> {
+    let duration = duration.unwrap_or(365);
+
+    // Determine the actual end date to display
+    let display_end_date = if let Some(date_str) = end_date {
+        date_str.to_string()
+    } else {
+        Local::now().format("%Y%m%d").to_string()
+    };
+
+    let vix = fetch_series(api_key, "VIXCLS", end_date, duration).await?;
+    let sp500 = fetch_series(api_key, "SP500", end_date, duration).await?;
+    let credit_spread = fetch_series(api_key, "BAMLH0A0HYM2", end_date, duration).await?;
+    let treasury_10y = fetch_series(api_key, "DGS10", end_date, duration).await?;
 
     Ok(FredData {
         vix: SeriesData {
@@ -112,6 +138,8 @@ pub async fn fetch_fred(api_key: &str) -> Result<FredData, Box<dyn std::error::E
             name: "10-Year Treasury".to_string(),
             points: treasury_10y,
         },
+        end_date: display_end_date,
+        duration,
     })
 }
 
@@ -154,9 +182,19 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     ));
 
     // Timeframe indicator (top right)
+    let end_date = NaiveDate::parse_from_str(&fred.end_date, "%Y%m%d")
+        .unwrap_or_else(|_| Local::now().date_naive());
+    let start_date = end_date - chrono::Duration::days(fred.duration as i64);
+    let timeframe = format!(
+        "{} to {} ({} days)",
+        start_date.format("%b %d, %Y"),
+        end_date.format("%b %d, %Y"),
+        fred.duration
+    );
     svg.push_str(&format!(
-        r#"<text x="{}" y="20" text-anchor="end" font-size="14" fill="black">120 days</text>"#,
-        width - 10
+        r#"<text x="{}" y="20" text-anchor="end" font-size="12" fill="black">{}</text>"#,
+        width - 10,
+        timeframe
     ));
 
     // Create 2x2 grid of charts (leaving room for header and footer)
@@ -321,8 +359,9 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
     let gradient_id = format!("vixGradient_{}_{}", x, y);
 
     // Create gradient: green (0-20), orange (20-40), red (>40)
+    // Gradient goes from top to bottom for inverted Y axis
     svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        r#"<defs><linearGradient id="{}" x1="0%" y1="0%" x2="0%" y2="100%">"#,
         gradient_id
     ));
 
@@ -374,7 +413,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
 
     svg.push_str(r#"</linearGradient></defs>"#);
 
-    // Draw area chart with gradient
+    // Draw area chart with gradient (inverted Y axis)
     generate_area_chart_internal(
         &mut svg,
         series,
@@ -384,9 +423,10 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
         height,
         &format!("url(#{})", gradient_id),
         None,
+        true, // invert_y
     );
 
-    // Draw threshold lines (only if within actual data range)
+    // Draw threshold lines (only if within actual data range) - inverted Y axis
     let chart_x = x + 40;
     let chart_y = y + 35;
     let chart_h = height - 55;
@@ -394,8 +434,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
 
     for (threshold, color) in [(calm_threshold, "green"), (fear_threshold, "red")] {
         if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
             svg.push_str(&format!(
                 r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
                 chart_x, line_y, chart_x + chart_w, line_y, color
@@ -515,6 +554,7 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
         height,
         &format!("url(#{})", gradient_id),
         None,
+        false, // invert_y
     );
 
     // Draw threshold lines (only if within actual data range)
@@ -603,10 +643,10 @@ fn generate_credit_spread_chart(
     let gradient_id = format!("creditGradient_{}_{}", x, y);
 
     // Create gradient with regime bands: <4% = green, 4-6% = orange, 6%+ = red
-    // Calculate percentages for gradient stops (inverted because SVG gradient goes top-to-bottom)
+    // Gradient goes from top to bottom for inverted Y axis
 
     svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        r#"<defs><linearGradient id="{}" x1="0%" y1="0%" x2="0%" y2="100%">"#,
         gradient_id
     ));
 
@@ -657,7 +697,7 @@ fn generate_credit_spread_chart(
 
     svg.push_str(r#"</linearGradient></defs>"#);
 
-    // Draw area chart with gradient
+    // Draw area chart with gradient (inverted Y axis)
     generate_area_chart_internal(
         &mut svg,
         series,
@@ -667,9 +707,10 @@ fn generate_credit_spread_chart(
         height,
         &format!("url(#{})", gradient_id),
         None,
+        true, // invert_y
     );
 
-    // Draw regime threshold lines (only if within actual data range)
+    // Draw regime threshold lines (only if within actual data range) - inverted Y axis
     let chart_x = x + 40;
     let chart_y = y + 35;
     let chart_h = height - 55;
@@ -677,8 +718,7 @@ fn generate_credit_spread_chart(
 
     for (threshold, color) in [(normal_threshold, "green"), (stress_threshold, "red")] {
         if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+            let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
             svg.push_str(&format!(
                 r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
                 chart_x, line_y, chart_x + chart_w, line_y, color
@@ -814,6 +854,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         height,
         &format!("url(#{})", gradient_id),
         None,
+        false, // invert_y
     );
 
     // Draw threshold lines (only if within actual data range)
@@ -846,6 +887,7 @@ fn generate_area_chart_internal(
     height: i32,
     color: &str,
     threshold: Option<f64>,
+    invert_y: bool,
 ) {
     if series.points.is_empty() {
         return;
@@ -887,7 +929,11 @@ fn generate_area_chart_internal(
         // Draw line along data points
         for (i, point) in series.points.iter().enumerate() {
             let px = chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32;
-            let py = chart_y + chart_h - ((point.value - min_val) / range * chart_h as f64) as i32;
+            let py = if invert_y {
+                chart_y + ((point.value - min_val) / range * chart_h as f64) as i32
+            } else {
+                chart_y + chart_h - ((point.value - min_val) / range * chart_h as f64) as i32
+            };
             path.push_str(&format!(" L {} {}", px, py));
         }
 
@@ -904,8 +950,11 @@ fn generate_area_chart_internal(
         // Draw threshold line if provided (e.g., VIX panic level at 15)
         if let Some(threshold_val) = threshold {
             if threshold_val >= min_val && threshold_val <= max_val {
-                let threshold_y =
-                    chart_y + chart_h - ((threshold_val - min_val) / range * chart_h as f64) as i32;
+                let threshold_y = if invert_y {
+                    chart_y + ((threshold_val - min_val) / range * chart_h as f64) as i32
+                } else {
+                    chart_y + chart_h - ((threshold_val - min_val) / range * chart_h as f64) as i32
+                };
                 svg.push_str(&format!(
                     r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="darkred" stroke-width="1" stroke-dasharray="4,2"/>"#,
                     chart_x, threshold_y, chart_x + chart_w, threshold_y
@@ -914,17 +963,32 @@ fn generate_area_chart_internal(
         }
     }
 
-    // Y-axis labels (min and max)
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-        chart_x - 5,
-        chart_y + 5,
-        max_val
-    ));
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-        chart_x - 5,
-        chart_y + chart_h,
-        min_val
-    ));
+    // Y-axis labels (min and max) - swap if inverted
+    if invert_y {
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
+            chart_x - 5,
+            chart_y + 5,
+            min_val
+        ));
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
+            chart_x - 5,
+            chart_y + chart_h,
+            max_val
+        ));
+    } else {
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
+            chart_x - 5,
+            chart_y + 5,
+            max_val
+        ));
+        svg.push_str(&format!(
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
+            chart_x - 5,
+            chart_y + chart_h,
+            min_val
+        ));
+    }
 }
