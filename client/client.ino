@@ -34,7 +34,8 @@ void setup() {
 
     // Configure ADC for battery monitoring
     analogReadResolution(12);  // 12-bit resolution (0-4095)
-    analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);  // 11dB attenuation for up to ~3.6V input
+    analogSetPinAttenuation(
+        BATTERY_ADC_PIN, ADC_11db);  // 11dB attenuation for up to ~3.6V input
 
     // Initialize SPI for display
     hspi.begin(EPD_SCK_PIN, -1, EPD_MOSI_PIN, -1);
@@ -167,15 +168,21 @@ void check_wake_reason() {
 
         case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("[Wake] Woke up from timer");
-            Serial.printf("[Wake] Current mode: %s\n",
-                          current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+            Serial.printf(
+                "[Wake] Current mode: %s\n",
+                current_mode == MODE_WEATHER
+                    ? "WEATHER"
+                    : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
             break;
 
         default:
             Serial.printf("[Wake] First boot or reset (reason: %d)\n",
                           wakeup_reason);
-            Serial.printf("[Wake] Current mode: %s\n",
-                          current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+            Serial.printf(
+                "[Wake] Current mode: %s\n",
+                current_mode == MODE_WEATHER
+                    ? "WEATHER"
+                    : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
             break;
     }
 }
@@ -232,6 +239,31 @@ uint16_t map_epbm_color(uint8_t color) {
 }
 
 /**
+ * Display a white screen with red border to indicate error/stale data
+ * Uses full screen refresh for reliability after deep sleep
+ */
+void show_error_screen() {
+    Serial.println("[Display] Drawing error screen");
+
+    display.setFullWindow();
+    display.firstPage();
+
+    do {
+        // Draw red border (10 pixels thick)
+        // Top border
+        display.fillRect(0, 0, 800, 10, GxEPD_RED);
+        // Bottom border
+        display.fillRect(0, 470, 800, 10, GxEPD_RED);
+        // Left border
+        display.fillRect(0, 0, 10, 480, GxEPD_RED);
+        // Right border
+        display.fillRect(790, 0, 10, 480, GxEPD_RED);
+    } while (display.nextPage());
+
+    Serial.println("[Display] Error screen complete");
+}
+
+/**
  * Get battery percentage from ESP32 ADC
  * Returns 0-100, or -1 if unavailable
  */
@@ -256,14 +288,15 @@ int get_battery_percentage() {
     // LiPo battery: 4.2V = 100%, 3.0V = 0%
     float min_voltage = 3.0;
     float max_voltage = 4.2;
-    int percentage = ((voltage - min_voltage) / (max_voltage - min_voltage)) * 100;
+    int percentage =
+        ((voltage - min_voltage) / (max_voltage - min_voltage)) * 100;
 
     // Clamp to 0-100
     if (percentage > 100) percentage = 100;
     if (percentage < 0) percentage = 0;
 
-    Serial.printf("[Battery] mV: %d, Voltage: %.2fV, Percentage: %d%%\n",
-                  mv, voltage, percentage);
+    Serial.printf("[Battery] mV: %d, Voltage: %.2fV, Percentage: %d%%\n", mv,
+                  voltage, percentage);
     return percentage;
 }
 
@@ -275,6 +308,7 @@ int get_battery_percentage() {
 void download_and_render_image() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[Stream] WiFi not connected, skipping download");
+        show_error_screen();
         return;
     }
 
@@ -299,7 +333,9 @@ void download_and_render_image() {
     }
 
     Serial.printf("[Stream] Mode: %s\n",
-                  current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+                  current_mode == MODE_WEATHER
+                      ? "WEATHER"
+                      : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
     Serial.printf("[Stream] Fetching: %s\n", url.c_str());
 
     http.begin(url);
@@ -312,6 +348,7 @@ void download_and_render_image() {
         Serial.printf("[Stream] Failed: %s\n",
                       http.errorToString(http_code).c_str());
         http.end();
+        show_error_screen();
         return;
     }
 
@@ -324,6 +361,7 @@ void download_and_render_image() {
         Serial.printf("[Stream] Size mismatch: expected %d bytes\n",
                       expected_size);
         http.end();
+        show_error_screen();
         return;
     }
 
@@ -342,6 +380,7 @@ void download_and_render_image() {
         if (millis() - start_time > 5000) {
             Serial.println("[Stream] Timeout reading header");
             http.end();
+            show_error_screen();
             return;
         }
     }
@@ -350,12 +389,14 @@ void download_and_render_image() {
     if (!parse_bitmap_header(header, &width, &height)) {
         Serial.println("[Stream] Invalid header");
         http.end();
+        show_error_screen();
         return;
     }
 
     // Step 2: Prepare display for streaming
     Serial.println("[Stream] Starting streaming render...");
     display.setFullWindow();
+    display.fillScreen(GxEPD_WHITE);
     display.firstPage();
 
     // Step 3: Stream pixel data directly to display
@@ -365,6 +406,7 @@ void download_and_render_image() {
         Serial.printf("[Stream] Failed to allocate %d byte buffer\n",
                       STREAM_BUFFER_SIZE);
         http.end();
+        show_error_screen();
         return;
     }
 
@@ -413,6 +455,7 @@ void download_and_render_image() {
             Serial.println("\n[Stream] Timeout!");
             free(pixel_buffer);
             http.end();
+            show_error_screen();
             return;
         }
     }
@@ -440,7 +483,9 @@ void download_and_render_image() {
 void deep_sleep() {
     Serial.printf("[Sleep] Sleeping for %d seconds\n", UPDATE_INTERVAL_SEC);
     Serial.printf("[Sleep] Current mode: %s (will persist on timer wake)\n",
-                  current_mode == MODE_WEATHER ? "WEATHER" : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+                  current_mode == MODE_WEATHER
+                      ? "WEATHER"
+                      : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
 
     // Calculate wake time
     uint64_t sleep_duration_us = UPDATE_INTERVAL_SEC * 1000000ULL;
@@ -464,7 +509,7 @@ void deep_sleep() {
     esp_deep_sleep_start();
 
     // Fallback: regular delay (for testing/development)
-    // Uncomment below if deep sleep causes issues
-    // delay(UPDATE_INTERVAL_SEC * 1000);
-    // Serial.println("[Sleep] Woke up!");
+    // Should never reach here in production
+    delay(UPDATE_INTERVAL_SEC * 1000);
+    Serial.println("[Sleep] Woke up!");
 }
