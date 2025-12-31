@@ -614,8 +614,8 @@ fn generate_credit_spread_chart(
     }
 
     // High yield spread regime thresholds
-    let normal_threshold = 4.0;
-    let stress_threshold = 6.0;
+    let normal_threshold = 3.0;
+    let stress_threshold = 4.0;
 
     // Calculate data range, ensuring thresholds are always visible
     let data_min = series
