@@ -5,9 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/bin
-EnvironmentFile=%h/bin/env.txt
-ExecStart=%h/bin/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY} --stock-symbols=${STOCK_SYMBOLS} --fred-api-key=${FRED_API_KEY}
+User=tboldt
+WorkingDirectory=/opt/iot-image-server
+EnvironmentFile=/opt/iot-image-server/env.txt
+ExecStart=/opt/iot-image-server/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY} --stock-symbols=${STOCK_SYMBOLS} --fred-api-key=${FRED_API_KEY}
 Restart=on-failure
 RestartSec=10s
 
@@ -19,4 +20,4 @@ ProtectHome=read-only
 ReadWritePaths=/tmp
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
