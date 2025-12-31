@@ -19,9 +19,11 @@ SPIClass hspi(HSPI);
 
 // Forward declarations
 void setup_wifi();
+bool sync_ntp_time();
 void setup_buttons();
 void check_wake_reason();
 void download_and_render_image();
+uint32_t calculate_sleep_duration();
 void deep_sleep();
 
 void setup() {
@@ -110,6 +112,9 @@ void setup_wifi() {
         Serial.printf("[WiFi] IP address: %s\n",
                       WiFi.localIP().toString().c_str());
         Serial.printf("[WiFi] RSSI: %d dBm\n", WiFi.RSSI());
+
+        // Sync time with NTP servers
+        sync_ntp_time();
     } else {
         Serial.printf("[WiFi] Failed to connect! Final status: %d\n",
                       WiFi.status());
@@ -118,6 +123,43 @@ void setup_wifi() {
             "4=CONNECT_FAILED, 6=DISCONNECTED");
         Serial.println("[WiFi] Proceeding with cached image (if available)");
     }
+}
+
+/**
+ * Sync time with NTP servers
+ * Returns true if successful, false otherwise
+ */
+bool sync_ntp_time() {
+    Serial.println("[NTP] Syncing time...");
+
+    // Configure NTP with timezone and DST
+    configTime(TIMEZONE_OFFSET_SEC, DST_OFFSET_SEC,
+               "pool.ntp.org", "time.nist.gov", "time.google.com");
+
+    // Wait for time to be set (max 10 seconds)
+    int retry = 0;
+    const int max_retries = 20;
+    while (time(nullptr) < 100000 && retry < max_retries) {
+        delay(500);
+        Serial.print(".");
+        retry++;
+    }
+    Serial.println();
+
+    if (time(nullptr) < 100000) {
+        Serial.println("[NTP] Failed to sync time!");
+        return false;
+    }
+
+    // Log current time for debugging
+    time_t now = time(nullptr);
+    struct tm* timeinfo = localtime(&now);
+    Serial.printf("[NTP] Time synced: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  timeinfo->tm_year + 1900, timeinfo->tm_mon + 1,
+                  timeinfo->tm_mday, timeinfo->tm_hour,
+                  timeinfo->tm_min, timeinfo->tm_sec);
+
+    return true;
 }
 
 /**
@@ -477,18 +519,88 @@ void download_and_render_image() {
 }
 
 /**
+ * Calculate seconds until next scheduled wake time
+ * Wake times: 6am, 12pm, 6pm, midnight (local time)
+ * Returns: seconds to sleep, or FALLBACK_SLEEP_SEC if time not synced
+ */
+uint32_t calculate_sleep_duration() {
+    time_t now = time(nullptr);
+
+    // Check if time is valid (synced)
+    if (now < 100000) {
+        Serial.println("[Sleep] Time not synced, using fallback (1 hour)");
+        return FALLBACK_SLEEP_SEC;
+    }
+
+    struct tm* current = localtime(&now);
+    struct tm next_wake = *current;
+
+    // Scheduled wake hours in ascending order
+    const int wake_hours[] = {WAKE_HOUR_1, WAKE_HOUR_2, WAKE_HOUR_3};
+    const int num_wake_times = sizeof(wake_hours) / sizeof(wake_hours[0]);
+
+    // Current time in minutes since midnight
+    int current_minutes = current->tm_hour * 60 + current->tm_min;
+
+    // Find next wake time
+    bool found = false;
+    for (int i = 0; i < num_wake_times; i++) {
+        int wake_minutes = wake_hours[i] * 60;
+
+        if (wake_minutes > current_minutes) {
+            // Next wake is today
+            next_wake.tm_hour = wake_hours[i];
+            next_wake.tm_min = 0;
+            next_wake.tm_sec = 0;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        // All wake times today have passed, wake at first time tomorrow
+        next_wake.tm_mday += 1;
+        next_wake.tm_hour = wake_hours[0];
+        next_wake.tm_min = 0;
+        next_wake.tm_sec = 0;
+    }
+
+    // Convert to time_t and calculate difference
+    time_t next_wake_time = mktime(&next_wake);
+    int32_t sleep_seconds = difftime(next_wake_time, now);
+
+    // Safety check: ensure positive sleep duration
+    if (sleep_seconds <= 0) {
+        Serial.printf("[Sleep] Invalid duration: %d sec, using fallback\n",
+                      sleep_seconds);
+        return FALLBACK_SLEEP_SEC;
+    }
+
+    // Log sleep schedule
+    Serial.printf("[Sleep] Current time: %02d:%02d:%02d\n",
+                  current->tm_hour, current->tm_min, current->tm_sec);
+    Serial.printf("[Sleep] Next wake: %02d:%02d:%02d (%d seconds / %.2f hours)\n",
+                  next_wake.tm_hour, next_wake.tm_min, next_wake.tm_sec,
+                  sleep_seconds, sleep_seconds / 3600.0);
+
+    return (uint32_t)sleep_seconds;
+}
+
+/**
  * Deep sleep until next update
  * Wakes automatically from timer OR button press
  */
 void deep_sleep() {
-    Serial.printf("[Sleep] Sleeping for %d seconds\n", UPDATE_INTERVAL_SEC);
+    // Calculate sleep duration to next scheduled wake time
+    uint32_t sleep_duration_sec = calculate_sleep_duration();
+    Serial.printf("[Sleep] Sleeping for %u seconds\n", sleep_duration_sec);
     Serial.printf("[Sleep] Current mode: %s (will persist on timer wake)\n",
                   current_mode == MODE_WEATHER
                       ? "WEATHER"
                       : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
 
-    // Calculate wake time
-    uint64_t sleep_duration_us = UPDATE_INTERVAL_SEC * 1000000ULL;
+    // Calculate wake time in microseconds
+    uint64_t sleep_duration_us = sleep_duration_sec * 1000000ULL;
 
     // Enable wake on timer
     esp_sleep_enable_timer_wakeup(sleep_duration_us);
@@ -510,6 +622,6 @@ void deep_sleep() {
 
     // Fallback: regular delay (for testing/development)
     // Should never reach here in production
-    delay(UPDATE_INTERVAL_SEC * 1000);
+    delay(FALLBACK_SLEEP_SEC * 1000);
     Serial.println("[Sleep] Woke up!");
 }

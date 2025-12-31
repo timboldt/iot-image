@@ -14,8 +14,19 @@
 //   - Button 1 (KEY0): weather/seed-e1002.bin
 //   - Button 2 (KEY1): stocks/seed-e1002.bin
 
-// Update interval in seconds (6 hours = 21600 seconds)
-#define UPDATE_INTERVAL_SEC 21600
+// Timezone configuration (Pacific Time example)
+// Common timezones:
+//   Pacific: -8, Eastern: -5, Central: -6, Mountain: -7, UTC: 0
+#define TIMEZONE_OFFSET_SEC (-8 * 3600)  // Offset from UTC in seconds
+#define DST_OFFSET_SEC 3600               // Daylight saving adjustment (1 hour)
+
+// Scheduled wake times (24-hour format, local time)
+#define WAKE_HOUR_1 6   // 6:00 AM
+#define WAKE_HOUR_2 12  // 12:00 PM (noon)
+#define WAKE_HOUR_3 18  // 6:00 PM
+
+// Fallback sleep duration if NTP fails
+#define FALLBACK_SLEEP_SEC (3600 * 6)
 
 // === ePaper Display Pins (reTerminal e1002) ===
 // Using GxEPD2 with GxEPD2_730c_GDEP073E01 driver
