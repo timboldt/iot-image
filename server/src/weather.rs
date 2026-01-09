@@ -108,8 +108,10 @@ struct BarData {
 }
 
 fn temperature_bar(temp: f32) -> BarData {
-    // Map temperature range 20°F to 100°F to 0-100% fill
-    let fill_percent = ((temp - 20.0) / 80.0 * 100.0).clamp(0.0, 100.0);
+    // Map temperature range 32°F to 100°F to 0-100% fill
+    let lowest = 32.0;
+    let highest = 100.0;
+    let fill_percent = ((temp - lowest) / (highest - lowest) * 100.0).clamp(0.0, 100.0);
     BarData { fill_percent }
 }
 
