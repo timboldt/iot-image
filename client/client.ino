@@ -542,18 +542,30 @@ uint32_t calculate_sleep_duration() {
     // Current time in minutes since midnight
     int current_minutes = current->tm_hour * 60 + current->tm_min;
 
-    // Find next wake time
+    // Find next wake time (must be at least 5 minutes away to avoid double-refresh)
     bool found = false;
     for (int i = 0; i < num_wake_times; i++) {
         int wake_minutes = wake_hours[i] * 60;
 
         if (wake_minutes > current_minutes) {
-            // Next wake is today
-            next_wake.tm_hour = wake_hours[i];
-            next_wake.tm_min = 0;
-            next_wake.tm_sec = 0;
-            found = true;
-            break;
+            // Check if this wake time is far enough in the future
+            struct tm temp_wake = *current;
+            temp_wake.tm_hour = wake_hours[i];
+            temp_wake.tm_min = 0;
+            temp_wake.tm_sec = 0;
+
+            time_t temp_wake_time = mktime(&temp_wake);
+            int32_t temp_sleep = difftime(temp_wake_time, now);
+
+            // Only use this wake time if it's at least 5 minutes away
+            // This prevents double-refresh when waking slightly before scheduled time
+            if (temp_sleep >= 300) {
+                next_wake.tm_hour = wake_hours[i];
+                next_wake.tm_min = 0;
+                next_wake.tm_sec = 0;
+                found = true;
+                break;
+            }
         }
     }
 
