@@ -4,5 +4,8 @@
 
 # Arduino secrets (contains WiFi credentials)
 client/arduino_secrets.h
-server/test_output.bin
-server/weather.svg
+
+data/
+server/*.bin
+server/*.svg
+server/*.png

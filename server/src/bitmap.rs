@@ -331,7 +331,6 @@ fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
         .0
 }
 
-
 /// Render SVG file to e-ink bitmap using Atkinson error diffusion dithering
 pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<EpdBitmap, String> {
     // Read SVG file

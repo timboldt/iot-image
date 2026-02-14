@@ -1142,6 +1142,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "csv",
  "image 0.25.9",
  "num-complex",
  "plotters",
