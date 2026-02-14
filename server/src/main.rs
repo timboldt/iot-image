@@ -2,6 +2,7 @@ mod bitmap;
 mod fred;
 mod stocks;
 mod weather;
+mod weight;
 
 use axum::{
     extract::{Query, State},
@@ -17,6 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 use stocks::{fetch_stocks, generate_stocks_svg};
 use weather::{fetch_weather, generate_weather_svg};
+use weight::{fetch_weight_data, generate_forecast_svg, generate_velocity_svg};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate weather images for IoT devices")]
@@ -39,6 +41,9 @@ struct Args {
     /// FRED API key
     #[arg(long)]
     fred_api_key: String,
+    /// Path to weight data CSV file
+    #[arg(long)]
+    weight_data_file: String,
     /// HTTP server port
     #[arg(long, default_value = "8080")]
     port: u16,
@@ -52,6 +57,7 @@ struct AppState {
     stocks_api_key: String,
     stock_symbols: String,
     fred_api_key: String,
+    weight_data_file: String,
 }
 
 #[derive(Deserialize)]
@@ -245,6 +251,128 @@ async fn get_fred_svg(
     }
 }
 
+async fn get_weight_forecast_bitmap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    let csv_path = Path::new(&state.weight_data_file);
+    let bitmap = match fetch_weight_data(csv_path).await {
+        Ok(data) => {
+            let svg_content = generate_forecast_svg(&data, query.battery_pct);
+
+            // Write SVG to temporary file
+            let temp_svg_path = "/tmp/weight_forecast.svg";
+            match std::fs::write(temp_svg_path, &svg_content) {
+                Ok(_) => {
+                    // Render SVG to bitmap
+                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
+                        Ok(bmp) => bmp,
+                        Err(e) => {
+                            eprintln!("Error rendering SVG: {}", e);
+                            bitmap::generate_test_bitmap(800, 480)
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error writing SVG file: {}", e);
+                    bitmap::generate_test_bitmap(800, 480)
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error fetching weight data: {}", e);
+            bitmap::generate_test_bitmap(800, 480)
+        }
+    };
+
+    let bytes = bitmap.to_bytes();
+
+    ([("Content-Type", "application/octet-stream")], bytes)
+}
+
+async fn get_weight_forecast_svg(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    let csv_path = Path::new(&state.weight_data_file);
+    match fetch_weight_data(csv_path).await {
+        Ok(data) => {
+            let svg_content = generate_forecast_svg(&data, query.battery_pct);
+            ([("Content-Type", "image/svg+xml")], svg_content)
+        }
+        Err(e) => {
+            let error_svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
+                </svg>"#,
+                e
+            );
+            ([("Content-Type", "image/svg+xml")], error_svg)
+        }
+    }
+}
+
+async fn get_weight_velocity_bitmap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    let csv_path = Path::new(&state.weight_data_file);
+    let bitmap = match fetch_weight_data(csv_path).await {
+        Ok(data) => {
+            let svg_content = generate_velocity_svg(&data, query.battery_pct);
+
+            // Write SVG to temporary file
+            let temp_svg_path = "/tmp/weight_velocity.svg";
+            match std::fs::write(temp_svg_path, &svg_content) {
+                Ok(_) => {
+                    // Render SVG to bitmap
+                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
+                        Ok(bmp) => bmp,
+                        Err(e) => {
+                            eprintln!("Error rendering SVG: {}", e);
+                            bitmap::generate_test_bitmap(800, 480)
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error writing SVG file: {}", e);
+                    bitmap::generate_test_bitmap(800, 480)
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error fetching weight data: {}", e);
+            bitmap::generate_test_bitmap(800, 480)
+        }
+    };
+
+    let bytes = bitmap.to_bytes();
+
+    ([("Content-Type", "application/octet-stream")], bytes)
+}
+
+async fn get_weight_velocity_svg(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    let csv_path = Path::new(&state.weight_data_file);
+    match fetch_weight_data(csv_path).await {
+        Ok(data) => {
+            let svg_content = generate_velocity_svg(&data, query.battery_pct);
+            ([("Content-Type", "image/svg+xml")], svg_content)
+        }
+        Err(e) => {
+            let error_svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
+                </svg>"#,
+                e
+            );
+            ([("Content-Type", "image/svg+xml")], error_svg)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -253,8 +381,8 @@ async fn main() {
     println!("\n=== iot-image Server Starting ===");
     println!("Serving e-ink bitmaps on port {}", args.port);
     println!(
-        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg",
-        args.port, args.port, args.port, args.port, args.port, args.port
+        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n    - http://localhost:{}/weight/forecast/seed-e1002.bin\n    - http://localhost:{}/weight/velocity/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg\n    - http://localhost:{}/weight/forecast/svg\n    - http://localhost:{}/weight/velocity/svg",
+        args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port
     );
     println!("Format: Raw e-ink bitmap (EPBM)");
     println!("Display: 800x480, 7 colors");
@@ -267,15 +395,20 @@ async fn main() {
         stocks_api_key: args.stocks_api_key.clone(),
         stock_symbols: args.stock_symbols.clone(),
         fred_api_key: args.fred_api_key.clone(),
+        weight_data_file: args.weight_data_file.clone(),
     });
 
     let app = Router::new()
         .route("/weather/seed-e1002.bin", get(get_weather_bitmap))
         .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
         .route("/fred/seed-e1002.bin", get(get_fred_bitmap))
+        .route("/weight/forecast/seed-e1002.bin", get(get_weight_forecast_bitmap))
+        .route("/weight/velocity/seed-e1002.bin", get(get_weight_velocity_bitmap))
         .route("/weather/svg", get(get_weather_svg))
         .route("/stocks/svg", get(get_stocks_svg))
         .route("/fred/svg", get(get_fred_svg))
+        .route("/weight/forecast/svg", get(get_weight_forecast_svg))
+        .route("/weight/velocity/svg", get(get_weight_velocity_svg))
         .with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
