@@ -183,101 +183,6 @@ async fn get_stocks_svg(
     }
 }
 
-async fn get_weather_debug(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    // Fetch weather data, render to bitmap with dithering, and return as PNG
-    match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
-        Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/weather_debug.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap with dithering
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => {
-                            // Convert bitmap back to PNG for visual inspection
-                            match bitmap::bitmap_to_png(&bmp) {
-                                Ok(png_bytes) => ([("Content-Type", "image/png")], png_bytes),
-                                Err(e) => {
-                                    eprintln!("Error converting to PNG: {}", e);
-                                    let error_png = vec![];
-                                    ([("Content-Type", "image/png")], error_png)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            let error_png = vec![];
-                            ([("Content-Type", "image/png")], error_png)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    let error_png = vec![];
-                    ([("Content-Type", "image/png")], error_png)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching weather: {}", e);
-            let error_png = vec![];
-            ([("Content-Type", "image/png")], error_png)
-        }
-    }
-}
-
-async fn get_stocks_debug(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    // Fetch stocks data, render to bitmap with dithering, and return as PNG
-    match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
-        Ok(stocks) => {
-            let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/stocks_debug.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap with dithering
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => {
-                            // Convert bitmap back to PNG for visual inspection
-                            match bitmap::bitmap_to_png(&bmp) {
-                                Ok(png_bytes) => ([("Content-Type", "image/png")], png_bytes),
-                                Err(e) => {
-                                    eprintln!("Error converting to PNG: {}", e);
-                                    let error_png = vec![];
-                                    ([("Content-Type", "image/png")], error_png)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            let error_png = vec![];
-                            ([("Content-Type", "image/png")], error_png)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    let error_png = vec![];
-                    ([("Content-Type", "image/png")], error_png)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching stocks: {}", e);
-            let error_png = vec![];
-            ([("Content-Type", "image/png")], error_png)
-        }
-    }
-}
 
 async fn get_fred_bitmap(
     State(state): State<Arc<AppState>>,
@@ -341,53 +246,6 @@ async fn get_fred_svg(
     }
 }
 
-async fn get_fred_debug(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    // Fetch FRED data, render to bitmap with dithering, and return as PNG
-    match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await {
-        Ok(fred) => {
-            let svg_content = generate_fred_svg(&fred, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/fred_debug.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap with dithering
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => {
-                            // Convert bitmap back to PNG for visual inspection
-                            match bitmap::bitmap_to_png(&bmp) {
-                                Ok(png_bytes) => ([("Content-Type", "image/png")], png_bytes),
-                                Err(e) => {
-                                    eprintln!("Error converting to PNG: {}", e);
-                                    let error_png = vec![];
-                                    ([("Content-Type", "image/png")], error_png)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            let error_png = vec![];
-                            ([("Content-Type", "image/png")], error_png)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    let error_png = vec![];
-                    ([("Content-Type", "image/png")], error_png)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching FRED data: {}", e);
-            let error_png = vec![];
-            ([("Content-Type", "image/png")], error_png)
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -397,8 +255,8 @@ async fn main() {
     println!("\n=== iot-image Server Starting ===");
     println!("Serving e-ink bitmaps on port {}", args.port);
     println!(
-        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg\n  Debug (Dithered PNG):\n    - http://localhost:{}/weather/debug\n    - http://localhost:{}/stocks/debug\n    - http://localhost:{}/fred/debug",
-        args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port
+        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg",
+        args.port, args.port, args.port, args.port, args.port, args.port
     );
     println!("Format: Raw e-ink bitmap (EPBM)");
     println!("Display: 800x480, 7 colors");
@@ -420,9 +278,6 @@ async fn main() {
         .route("/weather/svg", get(get_weather_svg))
         .route("/stocks/svg", get(get_stocks_svg))
         .route("/fred/svg", get(get_fred_svg))
-        .route("/weather/debug", get(get_weather_debug))
-        .route("/stocks/debug", get(get_stocks_debug))
-        .route("/fred/debug", get(get_fred_debug))
         .with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
