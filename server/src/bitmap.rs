@@ -331,35 +331,6 @@ fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
         .0
 }
 
-/// Convert e-ink bitmap back to PNG for debugging
-pub fn bitmap_to_png(bitmap: &EpdBitmap) -> Result<Vec<u8>, String> {
-    let mut pixmap = tiny_skia::Pixmap::new(bitmap.width as u32, bitmap.height as u32)
-        .ok_or("Failed to create pixmap")?;
-
-    // Convert each pixel back to RGB
-    for y in 0..bitmap.height {
-        for x in 0..bitmap.width {
-            let index = y as usize * bitmap.width as usize + x as usize;
-            let color_val = bitmap.data[index];
-
-            // Map color value back to RGB using palette
-            let (r, g, b) = if (color_val as usize) < PALETTE.len() {
-                let c = &PALETTE[color_val as usize];
-                (c[0], c[1], c[2])
-            } else {
-                (128, 128, 128) // Unknown - gray
-            };
-
-            let pixel = tiny_skia::ColorU8::from_rgba(r, g, b, 255);
-            pixmap.pixels_mut()[y as usize * bitmap.width as usize + x as usize] =
-                pixel.premultiply();
-        }
-    }
-
-    pixmap
-        .encode_png()
-        .map_err(|e| format!("Failed to encode PNG: {}", e))
-}
 
 /// Render SVG file to e-ink bitmap using Atkinson error diffusion dithering
 pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<EpdBitmap, String> {

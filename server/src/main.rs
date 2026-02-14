@@ -183,7 +183,6 @@ async fn get_stocks_svg(
     }
 }
 
-
 async fn get_fred_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
@@ -245,7 +244,6 @@ async fn get_fred_svg(
         }
     }
 }
-
 
 #[tokio::main]
 async fn main() {
