@@ -8,7 +8,7 @@ Type=simple
 User=tboldt
 WorkingDirectory=/opt/iot-image-server
 EnvironmentFile=/opt/iot-image-server/env.txt
-ExecStart=/opt/iot-image-server/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY} --stock-symbols=${STOCK_SYMBOLS} --fred-api-key=${FRED_API_KEY} --weight-data-file=/home/tboldt/workspace/iot-image/data/weight.csv
+ExecStart=/opt/iot-image-server/iot-image-server --lat=${OPEN_WEATHER_LAT} --lon=${OPEN_WEATHER_LON} --open-weather-key=${OPEN_WEATHER_KEY} --stocks-api-key=${TWELVE_DATA_API_KEY} --stock-symbols=${STOCK_SYMBOLS} --fred-api-key=${FRED_API_KEY} --weight-data-dir=/home/tboldt/workspace/iot-image/data
 Restart=on-failure
 RestartSec=10s
 

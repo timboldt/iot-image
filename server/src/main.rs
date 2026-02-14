@@ -41,9 +41,9 @@ struct Args {
     /// FRED API key
     #[arg(long)]
     fred_api_key: String,
-    /// Path to weight data CSV file
+    /// Directory containing weight data CSV files
     #[arg(long)]
-    weight_data_file: String,
+    weight_data_dir: String,
     /// HTTP server port
     #[arg(long, default_value = "8080")]
     port: u16,
@@ -57,7 +57,7 @@ struct AppState {
     stocks_api_key: String,
     stock_symbols: String,
     fred_api_key: String,
-    weight_data_file: String,
+    weight_data_dir: String,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +65,7 @@ struct QueryArgs {
     battery_pct: Option<u8>,
     date: Option<String>,    // Optional end date in YYYYMMDD format
     duration: Option<usize>, // Optional duration in days
+    user: Option<String>,    // User for weight data (defaults to "weight")
 }
 
 async fn get_weather_bitmap(
@@ -255,8 +256,9 @@ async fn get_weight_forecast_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = Path::new(&state.weight_data_file);
-    let bitmap = match fetch_weight_data(csv_path).await {
+    let user = query.user.as_deref().unwrap_or("weight");
+    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_forecast_svg(&data, query.battery_pct);
 
@@ -294,8 +296,9 @@ async fn get_weight_forecast_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = Path::new(&state.weight_data_file);
-    match fetch_weight_data(csv_path).await {
+    let user = query.user.as_deref().unwrap_or("weight");
+    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_forecast_svg(&data, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -316,8 +319,9 @@ async fn get_weight_velocity_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = Path::new(&state.weight_data_file);
-    let bitmap = match fetch_weight_data(csv_path).await {
+    let user = query.user.as_deref().unwrap_or("weight");
+    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_velocity_svg(&data, query.battery_pct);
 
@@ -355,8 +359,9 @@ async fn get_weight_velocity_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = Path::new(&state.weight_data_file);
-    match fetch_weight_data(csv_path).await {
+    let user = query.user.as_deref().unwrap_or("weight");
+    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_velocity_svg(&data, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -395,15 +400,21 @@ async fn main() {
         stocks_api_key: args.stocks_api_key.clone(),
         stock_symbols: args.stock_symbols.clone(),
         fred_api_key: args.fred_api_key.clone(),
-        weight_data_file: args.weight_data_file.clone(),
+        weight_data_dir: args.weight_data_dir.clone(),
     });
 
     let app = Router::new()
         .route("/weather/seed-e1002.bin", get(get_weather_bitmap))
         .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
         .route("/fred/seed-e1002.bin", get(get_fred_bitmap))
-        .route("/weight/forecast/seed-e1002.bin", get(get_weight_forecast_bitmap))
-        .route("/weight/velocity/seed-e1002.bin", get(get_weight_velocity_bitmap))
+        .route(
+            "/weight/forecast/seed-e1002.bin",
+            get(get_weight_forecast_bitmap),
+        )
+        .route(
+            "/weight/velocity/seed-e1002.bin",
+            get(get_weight_velocity_bitmap),
+        )
         .route("/weather/svg", get(get_weather_svg))
         .route("/stocks/svg", get(get_stocks_svg))
         .route("/fred/svg", get(get_fred_svg))

@@ -34,8 +34,6 @@ pub struct WeightData {
     pub linear_projection: Vec<ProjectionPoint>,
     pub decay_projection: Vec<ProjectionPoint>,
     pub stall_point: Option<ProjectionPoint>,
-    #[allow(dead_code)]
-    pub start_date: DateTime<Utc>,
     pub today: DateTime<Utc>,
 }
 
@@ -99,10 +97,10 @@ struct KalmanFilter {
 impl KalmanFilter {
     fn new(initial_weight: f64) -> Self {
         Self {
-            x: [initial_weight, -0.5], // Initial velocity estimate: -0.5 lbs/day
-            p: [[1.0, 0.0], [0.0, 1.0]], // Initial covariance
+            x: [initial_weight, -0.5],        // Initial velocity estimate: -0.5 lbs/day
+            p: [[1.0, 0.0], [0.0, 1.0]],      // Initial covariance
             q: [[0.005, 0.0], [0.0, 0.0005]], // Process noise (reduced for more smoothing)
-            r: 1.5, // Measurement noise (increased for more smoothing)
+            r: 1.5,                           // Measurement noise (increased for more smoothing)
         }
     }
 
@@ -114,7 +112,10 @@ impl KalmanFilter {
         self.x = [x0, x1];
 
         // Covariance: P = F * P * F^T + Q
-        let p00 = self.p[0][0] + 2.0 * dt_days * self.p[0][1] + dt_days * dt_days * self.p[1][1] + self.q[0][0];
+        let p00 = self.p[0][0]
+            + 2.0 * dt_days * self.p[0][1]
+            + dt_days * dt_days * self.p[1][1]
+            + self.q[0][0];
         let p01 = self.p[0][1] + dt_days * self.p[1][1] + self.q[0][1];
         let p10 = p01; // Symmetric
         let p11 = self.p[1][1] + self.q[1][1];
@@ -165,7 +166,7 @@ pub fn process_weight_data(readings: &[WeightReading]) -> Vec<KalmanState> {
 
     // Process subsequent readings
     for i in 1..readings.len() {
-        let dt = (readings[i].timestamp - readings[i-1].timestamp).num_seconds() as f64 / 86400.0;
+        let dt = (readings[i].timestamp - readings[i - 1].timestamp).num_seconds() as f64 / 86400.0;
 
         filter.predict(dt);
         filter.update(readings[i].weight_lbs);
@@ -205,37 +206,81 @@ pub fn calculate_linear_projection(
 
 pub fn calculate_decay_projection(
     last_state: &KalmanState,
+    kalman_states: &[KalmanState],
     days_ahead: i64,
 ) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>) {
     let mut projection = Vec::new();
     let mut stall_point = None;
 
-    let mut weight = last_state.weight_lbs;
-    let mut velocity = last_state.velocity_lbs_per_day;
+    // Extract v₀ and W₀ from latest state
+    let v0 = last_state.velocity_lbs_per_day;
+    let w0 = last_state.weight_lbs;
 
-    // Metabolic resistance acceleration: +0.0177 lbs/week/day = +0.0177/7 lbs/day/day
-    let acceleration = 0.0177 / 7.0;
+    // Calculate acceleration (a) from linear regression on velocity over last 60 days
+    let lookback_date = last_state.timestamp - Duration::days(60);
+    let recent_states: Vec<_> = kalman_states
+        .iter()
+        .filter(|s| s.timestamp >= lookback_date)
+        .collect();
 
+    let acceleration = if recent_states.len() >= 2 {
+        // Linear regression: v(t) = v₀ + a*t
+        let n = recent_states.len() as f64;
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut sum_xy = 0.0;
+        let mut sum_x2 = 0.0;
+
+        for (i, state) in recent_states.iter().enumerate() {
+            let x = i as f64;
+            let y = state.velocity_lbs_per_day;
+
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_x2 += x * x;
+        }
+
+        // Slope = acceleration in lbs/day/day (per data point)
+        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x);
+
+        // Convert from per-datapoint to per-day
+        slope / (60.0 / n)
+    } else {
+        // Fallback if insufficient data
+        0.0
+    };
+
+    // Calculate stall time: when v(t) = v₀ + a*t = 0
+    let t_stall = if acceleration > 0.0 && v0 < 0.0 {
+        Some(-v0 / acceleration)
+    } else {
+        None
+    };
+
+    // Generate projection using quadratic formula: W(t) = W₀ + v₀*t + 0.5*a*t²
     for day in 0..=days_ahead {
+        let t = day as f64;
         let timestamp = last_state.timestamp + Duration::days(day);
+
+        // Quadratic weight projection
+        let weight_lbs = w0 + v0 * t + 0.5 * acceleration * t * t;
 
         projection.push(ProjectionPoint {
             timestamp,
-            weight_lbs: weight,
+            weight_lbs,
         });
 
-        // Check if we've reached stall point (velocity >= 0)
-        if velocity >= 0.0 && stall_point.is_none() {
-            stall_point = Some(ProjectionPoint {
-                timestamp,
-                weight_lbs: weight,
-            });
-            break;
+        // Check if we've passed the stall point
+        if let Some(stall_days) = t_stall {
+            if t >= stall_days && stall_point.is_none() {
+                stall_point = Some(ProjectionPoint {
+                    timestamp,
+                    weight_lbs,
+                });
+                break;
+            }
         }
-
-        // Update for next iteration
-        weight += velocity;
-        velocity += acceleration;
     }
 
     (projection, stall_point)
@@ -245,9 +290,7 @@ pub fn calculate_decay_projection(
 // Layer 2: Data Processing - Main Fetch Function
 // ============================================================================
 
-pub async fn fetch_weight_data(
-    csv_path: &Path,
-) -> Result<WeightData, Box<dyn Error>> {
+pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
     let raw_readings = read_weight_csv(csv_path)?;
 
@@ -263,12 +306,12 @@ pub async fn fetch_weight_data(
     }
 
     let last_state = kalman_states.last().unwrap();
-    let start_date = raw_readings.first().unwrap().timestamp;
     let today = Utc::now();
 
     // Calculate projections
     let linear_projection = calculate_linear_projection(last_state, 90);
-    let (decay_projection, stall_point) = calculate_decay_projection(last_state, 90);
+    let (decay_projection, stall_point) =
+        calculate_decay_projection(last_state, &kalman_states, 90);
 
     Ok(WeightData {
         raw_readings,
@@ -276,7 +319,6 @@ pub async fn fetch_weight_data(
         linear_projection,
         decay_projection,
         stall_point,
-        start_date,
         today,
     })
 }
@@ -410,7 +452,10 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let x = x_to_pixel(*days as f64);
         svg.push_str(&format!(
             r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#e0e0e0" stroke-width="1"/>"##,
-            x, margin_top, x, height - margin_bottom
+            x,
+            margin_top,
+            x,
+            height - margin_bottom
         ));
     }
 
@@ -421,7 +466,10 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = y_to_pixel(y_val);
         svg.push_str(&format!(
             r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#e0e0e0" stroke-width="1"/>"##,
-            margin_left, y, width - margin_right, y
+            margin_left,
+            y,
+            width - margin_right,
+            y
         ));
         y_val += y_step;
     }
@@ -429,11 +477,17 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     // Draw axes
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="2"/>"#,
-        margin_left, height - margin_bottom, width - margin_right, height - margin_bottom
+        margin_left,
+        height - margin_bottom,
+        width - margin_right,
+        height - margin_bottom
     ));
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="2"/>"#,
-        margin_left, margin_top, margin_left, height - margin_bottom
+        margin_left,
+        margin_top,
+        margin_left,
+        height - margin_bottom
     ));
 
     // X-axis labels
@@ -441,7 +495,9 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let x = x_to_pixel(*days as f64);
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="middle" font-size="12" fill="black">{}</text>"#,
-            x, height - margin_bottom + 20, days
+            x,
+            height - margin_bottom + 20,
+            days
         ));
     }
 
@@ -451,7 +507,9 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = y_to_pixel(y_val);
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">{:.0}</text>"#,
-            margin_left - 10, y + 4.0, y_val
+            margin_left - 10,
+            y + 4.0,
+            y_val
         ));
         y_val += y_step;
     }
@@ -543,7 +601,8 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         ));
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" font-size="12" fill="red">Stall Point</text>"#,
-            x + 10.0, y - 5.0
+            x + 10.0,
+            y - 5.0
         ));
     }
 
@@ -552,7 +611,9 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" text-anchor="middle" font-size="12" fill="black">{}</text>"#,
-        width / 2, height - 10, timestamp
+        width / 2,
+        height - 10,
+        timestamp
     ));
 
     svg.push_str("</svg>");
@@ -617,7 +678,8 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     let velocity_to_pixel = |velocity_lbs_per_week: f64| -> f64 {
         let bottom_top = margin_top + top_height + gap;
-        bottom_top as f64 + (vel_max - velocity_lbs_per_week) / (vel_max - vel_min) * bottom_height as f64
+        bottom_top as f64
+            + (vel_max - velocity_lbs_per_week) / (vel_max - vel_min) * bottom_height as f64
     };
 
     // Start building SVG
@@ -719,7 +781,10 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = weight_to_pixel(w);
         svg.push_str(&format!(
             r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#e0e0e0" stroke-width="0.5"/>"##,
-            margin_left, y, width - margin_right, y
+            margin_left,
+            y,
+            width - margin_right,
+            y
         ));
         w += weight_step;
     }
@@ -729,14 +794,20 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = velocity_to_pixel(*vel);
         svg.push_str(&format!(
             r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#e0e0e0" stroke-width="0.5"/>"##,
-            margin_left, y, width - margin_right, y
+            margin_left,
+            y,
+            width - margin_right,
+            y
         ));
     }
 
     // Draw axes for top panel
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="1.5"/>"#,
-        margin_left, top_panel_bottom, width - margin_right, top_panel_bottom
+        margin_left,
+        top_panel_bottom,
+        width - margin_right,
+        top_panel_bottom
     ));
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="1.5"/>"#,
@@ -746,7 +817,10 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     // Draw axes for bottom panel
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="1.5"/>"#,
-        margin_left, bottom_panel_bottom, width - margin_right, bottom_panel_bottom
+        margin_left,
+        bottom_panel_bottom,
+        width - margin_right,
+        bottom_panel_bottom
     ));
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="1.5"/>"#,
@@ -761,7 +835,9 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let label = timestamp.format("%Y-%m-%d");
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="middle" font-size="10" fill="black">{}</text>"#,
-            x, bottom_panel_bottom + 20, label
+            x,
+            bottom_panel_bottom + 20,
+            label
         ));
         day += label_interval;
     }
@@ -772,7 +848,9 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = weight_to_pixel(w);
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.0}</text>"#,
-            margin_left - 5, y + 3.0, w
+            margin_left - 5,
+            y + 3.0,
+            w
         ));
         w += weight_step;
     }
@@ -782,7 +860,9 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         let y = velocity_to_pixel(*vel);
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-            margin_left - 5, y + 3.0, vel
+            margin_left - 5,
+            y + 3.0,
+            vel
         ));
     }
 
@@ -840,19 +920,25 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     // Legend for top panel
     svg.push_str(&format!(
         r##"<circle cx="{}" cy="{}" r="3" fill="#999999" opacity="0.6"/>"##,
-        width - margin_right - 200, margin_top + 15
+        width - margin_right - 200,
+        margin_top + 15
     ));
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" font-size="11" fill="black">Actual Scale Weight</text>"#,
-        width - margin_right - 192, margin_top + 19
+        width - margin_right - 192,
+        margin_top + 19
     ));
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="blue" stroke-width="2.5"/>"#,
-        width - margin_right - 200, margin_top + 30, width - margin_right - 180, margin_top + 30
+        width - margin_right - 200,
+        margin_top + 30,
+        width - margin_right - 180,
+        margin_top + 30
     ));
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" font-size="11" fill="black">Kalman Trend (Denoised)</text>"#,
-        width - margin_right - 172, margin_top + 34
+        width - margin_right - 172,
+        margin_top + 34
     ));
 
     // ===== BOTTOM PANEL: Velocity Chart =====
@@ -861,7 +947,10 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     let zero_y = velocity_to_pixel(0.0);
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="2"/>"#,
-        margin_left, zero_y, width - margin_right, zero_y
+        margin_left,
+        zero_y,
+        width - margin_right,
+        zero_y
     ));
 
     // Area chart (velocity curve with red fill, past 90 days only, clipped at +/-2)
