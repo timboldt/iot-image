@@ -5,7 +5,15 @@
 #include "config.h"
 
 // Display modes
-enum DisplayMode { MODE_WEATHER = 0, MODE_STOCKS = 1, MODE_FRED = 2 };
+enum DisplayMode {
+    MODE_WEATHER = 0,
+    MODE_STOCKS = 1,
+    MODE_FRED = 2,
+    MODE_WEIGHT_USER1_VELOCITY = 3,
+    MODE_WEIGHT_USER1_FORECAST = 4,
+    MODE_WEIGHT_USER2_VELOCITY = 5,
+    MODE_WEIGHT_USER2_FORECAST = 6
+};
 
 // RTC memory to persist display mode across deep sleep
 RTC_DATA_ATTR DisplayMode current_mode = MODE_WEATHER;
@@ -25,6 +33,7 @@ void check_wake_reason();
 void download_and_render_image();
 uint32_t calculate_sleep_duration();
 void deep_sleep();
+const char* get_mode_name(DisplayMode mode);
 
 void setup() {
     // Use USB Serial for debugging (Serial, not Serial1)
@@ -74,6 +83,30 @@ void setup() {
 
 void loop() {
     // Loop not used; device wakes from deep sleep and runs setup() again
+}
+
+/**
+ * Get human-readable name for display mode
+ */
+const char* get_mode_name(DisplayMode mode) {
+    switch (mode) {
+        case MODE_WEATHER:
+            return "WEATHER";
+        case MODE_STOCKS:
+            return "STOCKS";
+        case MODE_FRED:
+            return "FRED";
+        case MODE_WEIGHT_USER1_VELOCITY:
+            return "WEIGHT_USER1_VELOCITY";
+        case MODE_WEIGHT_USER1_FORECAST:
+            return "WEIGHT_USER1_FORECAST";
+        case MODE_WEIGHT_USER2_VELOCITY:
+            return "WEIGHT_USER2_VELOCITY";
+        case MODE_WEIGHT_USER2_FORECAST:
+            return "WEIGHT_USER2_FORECAST";
+        default:
+            return "UNKNOWN";
+    }
 }
 
 /**
@@ -167,8 +200,8 @@ bool sync_ntp_time() {
  * Buttons are active-low (LOW when pressed)
  */
 void setup_buttons() {
-    pinMode(BUTTON_KEY0, INPUT_PULLUP);  // Button 1 (Green - FRED)
-    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Middle - Stocks)
+    pinMode(BUTTON_KEY0, INPUT_PULLUP);  // Button 1 (Green - Finance: Stocks/FRED)
+    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Middle - Weight: Velocity/Forecast)
     pinMode(BUTTON_KEY2, INPUT_PULLUP);  // Button 3 (Left - Weather)
 
     Serial.println("[Buttons] Initialized with pullups");
@@ -191,13 +224,39 @@ void check_wake_reason() {
 
             // Check which button triggered the wakeup
             if (wakeup_pin_mask & (1ULL << BUTTON_KEY0)) {
-                Serial.println(
-                    "[Wake] Button 1 (Green) pressed - switching to FRED");
-                current_mode = MODE_FRED;
+                // Finance button - cycle between stocks and fred
+                if (current_mode == MODE_STOCKS) {
+                    Serial.println(
+                        "[Wake] Button 1 (Green) pressed - switching to FRED");
+                    current_mode = MODE_FRED;
+                } else {
+                    Serial.println(
+                        "[Wake] Button 1 (Green) pressed - switching to STOCKS");
+                    current_mode = MODE_STOCKS;
+                }
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY1)) {
-                Serial.println(
-                    "[Wake] Button 2 (Middle) pressed - switching to STOCKS");
-                current_mode = MODE_STOCKS;
+                // Weight button - cycle through users and chart types
+                if (current_mode == MODE_WEIGHT_USER1_VELOCITY) {
+                    Serial.println(
+                        "[Wake] Button 2 (Middle) pressed - switching to USER1 "
+                        "FORECAST");
+                    current_mode = MODE_WEIGHT_USER1_FORECAST;
+                } else if (current_mode == MODE_WEIGHT_USER1_FORECAST) {
+                    Serial.println(
+                        "[Wake] Button 2 (Middle) pressed - switching to USER2 "
+                        "VELOCITY");
+                    current_mode = MODE_WEIGHT_USER2_VELOCITY;
+                } else if (current_mode == MODE_WEIGHT_USER2_VELOCITY) {
+                    Serial.println(
+                        "[Wake] Button 2 (Middle) pressed - switching to USER2 "
+                        "FORECAST");
+                    current_mode = MODE_WEIGHT_USER2_FORECAST;
+                } else {
+                    Serial.println(
+                        "[Wake] Button 2 (Middle) pressed - switching to USER1 "
+                        "VELOCITY");
+                    current_mode = MODE_WEIGHT_USER1_VELOCITY;
+                }
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY2)) {
                 Serial.println(
                     "[Wake] Button 3 (Left) pressed - switching to WEATHER");
@@ -210,21 +269,13 @@ void check_wake_reason() {
 
         case ESP_SLEEP_WAKEUP_TIMER:
             Serial.println("[Wake] Woke up from timer");
-            Serial.printf(
-                "[Wake] Current mode: %s\n",
-                current_mode == MODE_WEATHER
-                    ? "WEATHER"
-                    : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+            Serial.printf("[Wake] Current mode: %s\n", get_mode_name(current_mode));
             break;
 
         default:
             Serial.printf("[Wake] First boot or reset (reason: %d)\n",
                           wakeup_reason);
-            Serial.printf(
-                "[Wake] Current mode: %s\n",
-                current_mode == MODE_WEATHER
-                    ? "WEATHER"
-                    : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+            Serial.printf("[Wake] Current mode: %s\n", get_mode_name(current_mode));
             break;
     }
 }
@@ -356,28 +407,60 @@ void download_and_render_image() {
 
     // Select endpoint based on current display mode
     const char* endpoint;
-    if (current_mode == MODE_WEATHER) {
-        endpoint = "weather/seed-e1002.bin";
-    } else if (current_mode == MODE_STOCKS) {
-        endpoint = "stocks/seed-e1002.bin";
-    } else {
-        endpoint = "fred/seed-e1002.bin";
+    const char* user_param = nullptr;
+
+    switch (current_mode) {
+        case MODE_WEATHER:
+            endpoint = "weather/seed-e1002.bin";
+            break;
+        case MODE_STOCKS:
+            endpoint = "stocks/seed-e1002.bin";
+            break;
+        case MODE_FRED:
+            endpoint = "fred/seed-e1002.bin";
+            break;
+        case MODE_WEIGHT_USER1_VELOCITY:
+            endpoint = "weight/velocity/seed-e1002.bin";
+            user_param = WEIGHT_USER_1;
+            break;
+        case MODE_WEIGHT_USER1_FORECAST:
+            endpoint = "weight/forecast/seed-e1002.bin";
+            user_param = WEIGHT_USER_1;
+            break;
+        case MODE_WEIGHT_USER2_VELOCITY:
+            endpoint = "weight/velocity/seed-e1002.bin";
+            user_param = WEIGHT_USER_2;
+            break;
+        case MODE_WEIGHT_USER2_FORECAST:
+            endpoint = "weight/forecast/seed-e1002.bin";
+            user_param = WEIGHT_USER_2;
+            break;
+        default:
+            endpoint = "weather/seed-e1002.bin";
+            break;
     }
 
     HTTPClient http;
     String url =
         String("http://") + SERVER_HOST + ":" + SERVER_PORT + "/" + endpoint;
 
-    // Add battery percentage query parameter.
-    int battery_pct = get_battery_percentage();
-    if (battery_pct >= 0) {
-        url += "?battery_pct=" + String(battery_pct);
+    // Add query parameters
+    bool has_params = false;
+
+    // Add user parameter for weight endpoints
+    if (user_param != nullptr) {
+        url += "?user=" + String(user_param);
+        has_params = true;
     }
 
-    Serial.printf("[Stream] Mode: %s\n",
-                  current_mode == MODE_WEATHER
-                      ? "WEATHER"
-                      : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+    // Add battery percentage
+    int battery_pct = get_battery_percentage();
+    if (battery_pct >= 0) {
+        url += (has_params ? "&" : "?");
+        url += "battery_pct=" + String(battery_pct);
+    }
+
+    Serial.printf("[Stream] Mode: %s\n", get_mode_name(current_mode));
     Serial.printf("[Stream] Fetching: %s\n", url.c_str());
 
     http.begin(url);
@@ -607,9 +690,7 @@ void deep_sleep() {
     uint32_t sleep_duration_sec = calculate_sleep_duration();
     Serial.printf("[Sleep] Sleeping for %u seconds\n", sleep_duration_sec);
     Serial.printf("[Sleep] Current mode: %s (will persist on timer wake)\n",
-                  current_mode == MODE_WEATHER
-                      ? "WEATHER"
-                      : (current_mode == MODE_STOCKS ? "STOCKS" : "FRED"));
+                  get_mode_name(current_mode));
 
     // Calculate wake time in microseconds
     uint64_t sleep_duration_us = sleep_duration_sec * 1000000ULL;
