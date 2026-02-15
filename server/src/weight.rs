@@ -28,12 +28,19 @@ pub struct ProjectionPoint {
 }
 
 #[derive(Debug, Clone)]
+pub struct DecayProjection {
+    pub lookback_days: i64,
+    pub points: Vec<ProjectionPoint>,
+    pub stall_point: Option<ProjectionPoint>,
+    pub color: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WeightData {
     pub raw_readings: Vec<WeightReading>,
     pub kalman_states: Vec<KalmanState>,
     pub linear_projection: Vec<ProjectionPoint>,
-    pub decay_projection: Vec<ProjectionPoint>,
-    pub stall_point: Option<ProjectionPoint>,
+    pub decay_projections: Vec<DecayProjection>,
     pub today: DateTime<Utc>,
 }
 
@@ -208,6 +215,7 @@ pub fn calculate_decay_projection(
     last_state: &KalmanState,
     kalman_states: &[KalmanState],
     days_ahead: i64,
+    lookback_days: i64,
 ) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>) {
     let mut projection = Vec::new();
     let mut stall_point = None;
@@ -216,8 +224,8 @@ pub fn calculate_decay_projection(
     let v0 = last_state.velocity_lbs_per_day;
     let w0 = last_state.weight_lbs;
 
-    // Calculate acceleration (a) from linear regression on velocity over last 60 days
-    let lookback_date = last_state.timestamp - Duration::days(60);
+    // Calculate acceleration (a) from linear regression on velocity over last N days
+    let lookback_date = last_state.timestamp - Duration::days(lookback_days);
     let recent_states: Vec<_> = kalman_states
         .iter()
         .filter(|s| s.timestamp >= lookback_date)
@@ -245,7 +253,7 @@ pub fn calculate_decay_projection(
         let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x);
 
         // Convert from per-datapoint to per-day
-        slope / (60.0 / n)
+        slope / (lookback_days as f64 / n)
     } else {
         // Fallback if insufficient data
         0.0
@@ -290,6 +298,9 @@ pub fn calculate_decay_projection(
 // Layer 2: Data Processing - Main Fetch Function
 // ============================================================================
 
+// Configuration for decay projections: (lookback_days, color)
+const DECAY_CONFIGS: &[(i64, &str)] = &[(60, "red"), (30, "orange"), (15, "green")];
+
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
     let raw_readings = read_weight_csv(csv_path)?;
@@ -310,15 +321,25 @@ pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Er
 
     // Calculate projections
     let linear_projection = calculate_linear_projection(last_state, 90);
-    let (decay_projection, stall_point) =
-        calculate_decay_projection(last_state, &kalman_states, 90);
+
+    // Calculate all decay projections
+    let mut decay_projections = Vec::new();
+    for &(lookback_days, color) in DECAY_CONFIGS {
+        let (points, stall_point) =
+            calculate_decay_projection(last_state, &kalman_states, 90, lookback_days);
+        decay_projections.push(DecayProjection {
+            lookback_days,
+            points,
+            stall_point,
+            color: color.to_string(),
+        });
+    }
 
     Ok(WeightData {
         raw_readings,
         kalman_states,
         linear_projection,
-        decay_projection,
-        stall_point,
+        decay_projections,
         today,
     })
 }
@@ -358,9 +379,11 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         y_max = y_max.max(point.weight_lbs);
     }
 
-    for point in &data.decay_projection {
-        y_min = y_min.min(point.weight_lbs);
-        y_max = y_max.max(point.weight_lbs);
+    for projection in &data.decay_projections {
+        for point in &projection.points {
+            y_min = y_min.min(point.weight_lbs);
+            y_max = y_max.max(point.weight_lbs);
+        }
     }
 
     y_min -= 2.0;
@@ -527,24 +550,26 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         }
     }
 
-    // Decay projection (orange solid)
-    if !data.decay_projection.is_empty() {
-        let mut path = String::from("M");
-        for (i, point) in data.decay_projection.iter().enumerate() {
-            let days = days_from_today(point.timestamp);
-            let x = x_to_pixel(days);
-            let y = y_to_pixel(point.weight_lbs);
+    // Draw all decay projections
+    for projection in &data.decay_projections {
+        if !projection.points.is_empty() {
+            let mut path = String::from("M");
+            for (i, point) in projection.points.iter().enumerate() {
+                let days = days_from_today(point.timestamp);
+                let x = x_to_pixel(days);
+                let y = y_to_pixel(point.weight_lbs);
 
-            if i == 0 {
-                path.push_str(&format!("{},{}", x, y));
-            } else {
-                path.push_str(&format!(" L{},{}", x, y));
+                if i == 0 {
+                    path.push_str(&format!("{},{}", x, y));
+                } else {
+                    path.push_str(&format!(" L{},{}", x, y));
+                }
             }
+            svg.push_str(&format!(
+                r#"<path d="{}" stroke="{}" stroke-width="2" fill="none"/>"#,
+                path, projection.color
+            ));
         }
-        svg.push_str(&format!(
-            r#"<path d="{}" stroke="orange" stroke-width="1.5" fill="none"/>"#,
-            path
-        ));
     }
 
     // Linear projection (blue dashed)
@@ -589,20 +614,66 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         ));
     }
 
-    // Stall point annotation
-    if let Some(stall) = &data.stall_point {
-        let days = days_from_today(stall.timestamp);
-        let x = x_to_pixel(days);
-        let y = y_to_pixel(stall.weight_lbs);
+    // Stall point markers
+    for projection in &data.decay_projections {
+        if let Some(stall) = &projection.stall_point {
+            let days = days_from_today(stall.timestamp);
+            let x = x_to_pixel(days);
+            let y = y_to_pixel(stall.weight_lbs);
 
+            svg.push_str(&format!(
+                r#"<circle cx="{}" cy="{}" r="4" fill="{}"/>"#,
+                x, y, projection.color
+            ));
+        }
+    }
+
+    // Legend
+    let legend_x = width - margin_right - 180;
+    let legend_y = margin_top + 10;
+    let legend_spacing = 18;
+
+    // Legend: Kalman filtered
+    svg.push_str(&format!(
+        r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="2"/>"#,
+        legend_x,
+        legend_y,
+        legend_x + 20,
+        legend_y
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" font-size="11" fill="black">Kalman Filtered</text>"#,
+        legend_x + 25,
+        legend_y + 4
+    ));
+
+    // Legend: Linear projection
+    svg.push_str(&format!(
+        r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="blue" stroke-width="2" stroke-dasharray="5,3"/>"#,
+        legend_x, legend_y + legend_spacing, legend_x + 20, legend_y + legend_spacing
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" font-size="11" fill="black">Linear Projection</text>"#,
+        legend_x + 25,
+        legend_y + legend_spacing + 4
+    ));
+
+    // Legend: Decay projections
+    for (i, projection) in data.decay_projections.iter().enumerate() {
+        let y = legend_y + ((i + 2) * legend_spacing as usize) as i32;
         svg.push_str(&format!(
-            r#"<circle cx="{}" cy="{}" r="4" fill="red"/>"#,
-            x, y
+            r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2"/>"#,
+            legend_x,
+            y,
+            legend_x + 20,
+            y,
+            projection.color
         ));
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="12" fill="red">Stall Point</text>"#,
-            x + 10.0,
-            y - 5.0
+            r#"<text x="{}" y="{}" font-size="11" fill="black">{}d Decay</text>"#,
+            legend_x + 25,
+            y + 4,
+            projection.lookback_days
         ));
     }
 
