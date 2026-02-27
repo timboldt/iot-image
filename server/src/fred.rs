@@ -33,7 +33,7 @@ pub struct FredData {
     pub vix: SeriesData,
     pub sp500: SeriesData,
     pub credit_spread: SeriesData,
-    pub treasury_10y: SeriesData,
+    pub yield_curve: SeriesData,
     pub end_date: String,
     pub duration: usize,
 }
@@ -115,7 +115,7 @@ pub async fn fetch_fred(
     let vix = fetch_series(api_key, "VIXCLS", end_date, duration).await?;
     let sp500 = fetch_series(api_key, "SP500", end_date, duration).await?;
     let credit_spread = fetch_series(api_key, "BAMLH0A0HYM2", end_date, duration).await?;
-    let treasury_10y = fetch_series(api_key, "DGS10", end_date, duration).await?;
+    let yield_curve = fetch_series(api_key, "T10Y3M", end_date, duration).await?;
 
     Ok(FredData {
         vix: SeriesData {
@@ -133,10 +133,10 @@ pub async fn fetch_fred(
             name: "High Yield Spreads".to_string(),
             points: credit_spread,
         },
-        treasury_10y: SeriesData {
-            symbol: "10Y".to_string(),
-            name: "10-Year Treasury".to_string(),
-            points: treasury_10y,
+        yield_curve: SeriesData {
+            symbol: "T10Y3M".to_string(),
+            name: "Yield Curve (10Y-3M)".to_string(),
+            points: yield_curve,
         },
         end_date: display_end_date,
         duration,
@@ -204,7 +204,7 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
         (10, 35),   // Top-left (VIX)
         (410, 35),  // Top-right (S&P 500)
         (10, 245),  // Bottom-left (Credit Spreads)
-        (410, 245), // Bottom-right (10Y Treasury)
+        (410, 245), // Bottom-right (Yield Curve)
     ];
 
     // Generate charts
@@ -229,8 +229,8 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
         chart_width,
         chart_height,
     ));
-    svg.push_str(&generate_treasury_chart(
-        &fred.treasury_10y,
+    svg.push_str(&generate_yield_curve_chart(
+        &fred.yield_curve,
         positions[3].0,
         positions[3].1,
         chart_width,
@@ -729,7 +729,13 @@ fn generate_credit_spread_chart(
     svg
 }
 
-fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i32) -> String {
+fn generate_yield_curve_chart(
+    series: &SeriesData,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> String {
     let mut svg = String::new();
 
     // Chart border
@@ -748,7 +754,7 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         ));
 
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.1}</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.2}%</text>"#,
             x + width - 5,
             y + 20,
             last.value
@@ -759,28 +765,27 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         return svg;
     }
 
+    // Yield curve thresholds (inverted paradigm: Negative = Green, Positive = Red)
+    let inversion_threshold = 0.0;
+    let deep_inversion_threshold = -0.5;
+
     // Calculate data range
     let data_min = series
         .points
         .iter()
         .map(|p| p.value)
         .min_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap_or(0.0);
+        .unwrap_or(-1.0);
     let data_max = series
         .points
         .iter()
         .map(|p| p.value)
         .max_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap_or(10.0);
+        .unwrap_or(3.0);
 
-    // Treasury regime thresholds: relative to highest value
-    // Green when close to peak, orange/red when yields drop significantly
-    let normal_threshold = data_max - 0.5; // 0.5% below peak
-    let stress_threshold = data_max - 1.0; // 1.0% below peak
-
-    // Ensure thresholds are always visible
-    let min_val = data_min.min(stress_threshold);
-    let max_val = data_max;
+    // Ensure thresholds are visible
+    let min_val = data_min.min(deep_inversion_threshold - 0.5);
+    let max_val = data_max.max(inversion_threshold + 0.5);
     let range = if max_val > min_val {
         max_val - min_val
     } else {
@@ -788,63 +793,43 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
     };
 
     // Create gradient ID unique to this chart
-    let gradient_id = format!("treasuryGradient_{}_{}", x, y);
+    let gradient_id = format!("yieldCurveGradient_{}_{}", x, y);
 
-    // Create gradient: red (>1% below peak), orange (0.5-1% below peak), green (within 0.5% of peak)
+    // With invert_y=true, top = min_val (negative), bottom = max_val (positive)
+    // Gradient is Top (0%, Green) to Bottom (100%, Red)
     svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        r#"<defs><linearGradient id="{}" x1="0%" y1="0%" x2="0%" y2="100%">"#,
         gradient_id
     ));
 
-    // Calculate gradient stop positions based on data range
-    if max_val <= stress_threshold {
-        // All stress - just red
+    if max_val <= deep_inversion_threshold {
+        // All deeply inverted (negative) - just green
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    } else if min_val >= inversion_threshold {
+        // All positive - just red
         svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
         svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-    } else if max_val <= normal_threshold {
-        // Stress to elevated - red to yellow (smooth transition)
-        let stress_pct = ((stress_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+    } else {
+        // Mixed range
+        let deep_pct = ((deep_inversion_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+        let zero_pct = ((inversion_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+
+        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
+            deep_pct
+        ));
         svg.push_str(&format!(
             r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-            stress_pct
+            zero_pct
         ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
-    } else {
-        // Full range - red, yellow, and green (smooth transitions)
-        if min_val < stress_threshold {
-            let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
-            let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
-
-            svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-                stress_pct
-            ));
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-                normal_pct
-            ));
-            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-        } else if min_val < normal_threshold {
-            // Starts in yellow zone
-            let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-                normal_pct
-            ));
-            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-        } else {
-            // All normal - just green
-            svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-            svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-        }
+        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
     }
 
     svg.push_str(r#"</linearGradient></defs>"#);
 
-    // Draw area chart with gradient
+    // Draw area chart with gradient (inverted Y axis)
     generate_area_chart_internal(
         &mut svg,
         series,
@@ -854,19 +839,21 @@ fn generate_treasury_chart(series: &SeriesData, x: i32, y: i32, width: i32, heig
         height,
         &format!("url(#{})", gradient_id),
         None,
-        false, // invert_y
+        true, // invert_y
     );
 
-    // Draw threshold lines (only if within actual data range)
+    // Draw threshold lines (inverted Y axis)
     let chart_x = x + 40;
     let chart_y = y + 35;
     let chart_h = height - 55;
     let chart_w = width - 50;
 
-    for (threshold, color) in [(stress_threshold, "red"), (normal_threshold, "green")] {
-        if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
+    for (threshold, color) in [
+        (inversion_threshold, "red"),
+        (deep_inversion_threshold, "green"),
+    ] {
+        if threshold >= min_val && threshold <= max_val {
+            let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
             svg.push_str(&format!(
                 r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
                 chart_x, line_y, chart_x + chart_w, line_y, color
