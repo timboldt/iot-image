@@ -299,7 +299,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(60, "red"), (30, "orange"), (15, "green")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(90, "purple"), (60, "red"), (30, "orange"), (15, "green")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
@@ -359,8 +359,8 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     let chart_width = width - margin_left - margin_right;
     let chart_height = height - margin_top - margin_bottom;
 
-    // Date range: -60 to +90 days from today
-    let days_back = 60;
+    // Date range: -90 to +90 days from today
+    let days_back = 90;
     let days_forward = 90;
     let x_min = -days_back as f64;
     let x_max = days_forward as f64;
@@ -471,8 +471,9 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     }
 
     // Draw grid lines
-    for days in [-60, -30, 0, 30, 60, 90].iter() {
-        let x = x_to_pixel(*days as f64);
+    let grid_days: Vec<i64> = (-90..=90).step_by(30).collect();
+    for &days in &grid_days {
+        let x = x_to_pixel(days as f64);
         svg.push_str(&format!(
             r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#e0e0e0" stroke-width="1"/>"##,
             x,
@@ -513,14 +514,16 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         height - margin_bottom
     ));
 
-    // X-axis labels
-    for days in [-60, -30, 0, 30, 60, 90].iter() {
-        let x = x_to_pixel(*days as f64);
+    // X-axis labels (date format)
+    for &days in &grid_days {
+        let x = x_to_pixel(days as f64);
+        let label_date = data.today + Duration::days(days);
+        let label = label_date.format("%-m/%-d");
         svg.push_str(&format!(
             r#"<text x="{}" y="{}" text-anchor="middle" font-size="12" fill="black">{}</text>"#,
             x,
             height - margin_bottom + 20,
-            days
+            label
         ));
     }
 
