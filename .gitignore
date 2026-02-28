@@ -9,3 +9,4 @@ data/
 server/*.bin
 server/*.svg
 server/*.png
+debug_render.png

@@ -10,9 +10,9 @@
 // Server configuration
 #define SERVER_HOST SECRET_HOST
 #define SERVER_PORT 8080
-// IMAGE_ENDPOINT is now dynamic based on button press:
-//   - Button 1 (KEY0): weather/seed-e1002.bin
-//   - Button 2 (KEY1): stocks/seed-e1002.bin
+// Endpoint is selected dynamically from current display mode:
+//   - weather, stocks, fred
+//   - weight/velocity and weight/forecast (with user query param)
 
 // Timezone configuration (Pacific Time example)
 // Common timezones:
@@ -68,6 +68,6 @@
 #define BUTTON_KEY1 4  // Middle button - Switch to Stocks
 #define BUTTON_KEY2 5  // Left button - Switch to Weather
 
-// PNG streaming buffer size
-// Used for downloading chunks and decoding on-the-fly
+// EPBM streaming buffer size
+// Used for downloading and rendering chunks on-the-fly
 #define STREAM_BUFFER_SIZE 8192  // 8KB chunks for efficient streaming

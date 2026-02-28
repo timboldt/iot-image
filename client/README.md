@@ -13,7 +13,7 @@ Arduino/ESP32-S3 client for the iot-image system. Runs on Seed Studio reTerminal
 
 ### 1. Configure WiFi & Server
 
-Edit `arduino-secrets.h`:
+Edit `arduino_secrets.h`:
 ```c
 #define SECRET_SSID "your_ssid"
 #define SECRET_PASS "your_password"
@@ -96,30 +96,28 @@ Configuration constants:
 - WiFi credentials
 - Server hostname/port
 - Display pin assignments
-- Buffer sizes
-- Update intervals
+- Streaming buffer size
+- Scheduled wake-time configuration (`WAKE_HOUR_*`, fallback sleep)
 
 ### `client.ino`
 Main sketch with functions:
 - `setup()` - Initialize and run main loop
 - `setup_wifi()` - Connect to WiFi with retries
-- `download_image()` - Download raw bitmap from server
+- `download_and_render_image()` - Stream raw bitmap from server and render in one pass
 - `parse_bitmap_header()` - Validate EPBM header and extract dimensions
 - `map_epbm_color()` - Convert EPBM color values to GxEPD2 constants
-- `render_image()` - Render bitmap to display and trigger refresh
 - `deep_sleep()` - Sleep until next update
 
 ## Update Cycle
 
 1. **Connect to WiFi** (5-10 seconds)
 2. **Download raw bitmap** from server (~5-10 seconds for 384KB over WiFi)
-   - Downloads entire bitmap into RAM
-   - Validates EPBM header
-3. **Render to display** (~20-30 seconds to draw 384,000 pixels)
-   - Reads pixel data and maps colors directly
-   - No decoding required
+   - Reads EPBM header and validates dimensions
+3. **Stream pixel data directly to display** (~20-30 seconds for 384,000 pixels)
+   - Uses a small chunk buffer (`STREAM_BUFFER_SIZE`)
+   - No image decode step
 4. **Display refresh** (5-10 seconds for full e-ink refresh)
-5. **Deep sleep** until next update (default: 6 hours)
+5. **Deep sleep** until next scheduled wake time (6:00, 12:00, 18:00 local time)
 
 Total active time: ~40-60 seconds, then sleep
 
@@ -127,7 +125,7 @@ Total active time: ~40-60 seconds, then sleep
 
 - WiFi disabled during sleep
 - Deep sleep consumes ~0.1 mA
-- Update interval configurable via `UPDATE_INTERVAL_SEC`
+- Wake schedule configurable via `WAKE_HOUR_1..3`
 - E-ink display uses power only during refresh
 
 ## Debugging
@@ -167,7 +165,7 @@ Serial output provides detailed status:
 - Check WiFi signal strength with serial monitor
 
 **Image not rendering?**
-- Verify server is running with `--serve` flag
+- Verify server process is running and listening on port 8080
 - Check server is accessible at SERVER_HOST:SERVER_PORT
 - Ensure server is returning EPBM format (384,008 bytes)
 - Verify bitmap dimensions are 800×480
