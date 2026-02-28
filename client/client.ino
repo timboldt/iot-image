@@ -34,6 +34,10 @@ void download_and_render_image();
 uint32_t calculate_sleep_duration();
 void deep_sleep();
 const char* get_mode_name(DisplayMode mode);
+DisplayMode next_finance_mode(DisplayMode mode);
+DisplayMode next_weight_mode(DisplayMode mode);
+const char* endpoint_for_mode(DisplayMode mode);
+const char* user_for_mode(DisplayMode mode);
 
 void setup() {
     // Use USB Serial for debugging (Serial, not Serial1)
@@ -106,6 +110,54 @@ const char* get_mode_name(DisplayMode mode) {
             return "WEIGHT_USER2_FORECAST";
         default:
             return "UNKNOWN";
+    }
+}
+
+DisplayMode next_finance_mode(DisplayMode mode) {
+    return mode == MODE_STOCKS ? MODE_FRED : MODE_STOCKS;
+}
+
+DisplayMode next_weight_mode(DisplayMode mode) {
+    switch (mode) {
+        case MODE_WEIGHT_USER1_VELOCITY:
+            return MODE_WEIGHT_USER1_FORECAST;
+        case MODE_WEIGHT_USER1_FORECAST:
+            return MODE_WEIGHT_USER2_VELOCITY;
+        case MODE_WEIGHT_USER2_VELOCITY:
+            return MODE_WEIGHT_USER2_FORECAST;
+        default:
+            return MODE_WEIGHT_USER1_VELOCITY;
+    }
+}
+
+const char* endpoint_for_mode(DisplayMode mode) {
+    switch (mode) {
+        case MODE_STOCKS:
+            return "stocks/seed-e1002.bin";
+        case MODE_FRED:
+            return "fred/seed-e1002.bin";
+        case MODE_WEIGHT_USER1_VELOCITY:
+        case MODE_WEIGHT_USER2_VELOCITY:
+            return "weight/velocity/seed-e1002.bin";
+        case MODE_WEIGHT_USER1_FORECAST:
+        case MODE_WEIGHT_USER2_FORECAST:
+            return "weight/forecast/seed-e1002.bin";
+        case MODE_WEATHER:
+        default:
+            return "weather/seed-e1002.bin";
+    }
+}
+
+const char* user_for_mode(DisplayMode mode) {
+    switch (mode) {
+        case MODE_WEIGHT_USER1_VELOCITY:
+        case MODE_WEIGHT_USER1_FORECAST:
+            return WEIGHT_USER_1;
+        case MODE_WEIGHT_USER2_VELOCITY:
+        case MODE_WEIGHT_USER2_FORECAST:
+            return WEIGHT_USER_2;
+        default:
+            return nullptr;
     }
 }
 
@@ -224,39 +276,13 @@ void check_wake_reason() {
 
             // Check which button triggered the wakeup
             if (wakeup_pin_mask & (1ULL << BUTTON_KEY0)) {
-                // Finance button - cycle between stocks and fred
-                if (current_mode == MODE_STOCKS) {
-                    Serial.println(
-                        "[Wake] Button 1 (Green) pressed - switching to FRED");
-                    current_mode = MODE_FRED;
-                } else {
-                    Serial.println(
-                        "[Wake] Button 1 (Green) pressed - switching to STOCKS");
-                    current_mode = MODE_STOCKS;
-                }
+                current_mode = next_finance_mode(current_mode);
+                Serial.printf("[Wake] Button 1 (Green) pressed - switching to %s\n",
+                              get_mode_name(current_mode));
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY1)) {
-                // Weight button - cycle through users and chart types
-                if (current_mode == MODE_WEIGHT_USER1_VELOCITY) {
-                    Serial.println(
-                        "[Wake] Button 2 (Middle) pressed - switching to USER1 "
-                        "FORECAST");
-                    current_mode = MODE_WEIGHT_USER1_FORECAST;
-                } else if (current_mode == MODE_WEIGHT_USER1_FORECAST) {
-                    Serial.println(
-                        "[Wake] Button 2 (Middle) pressed - switching to USER2 "
-                        "VELOCITY");
-                    current_mode = MODE_WEIGHT_USER2_VELOCITY;
-                } else if (current_mode == MODE_WEIGHT_USER2_VELOCITY) {
-                    Serial.println(
-                        "[Wake] Button 2 (Middle) pressed - switching to USER2 "
-                        "FORECAST");
-                    current_mode = MODE_WEIGHT_USER2_FORECAST;
-                } else {
-                    Serial.println(
-                        "[Wake] Button 2 (Middle) pressed - switching to USER1 "
-                        "VELOCITY");
-                    current_mode = MODE_WEIGHT_USER1_VELOCITY;
-                }
+                current_mode = next_weight_mode(current_mode);
+                Serial.printf("[Wake] Button 2 (Middle) pressed - switching to %s\n",
+                              get_mode_name(current_mode));
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY2)) {
                 Serial.println(
                     "[Wake] Button 3 (Left) pressed - switching to WEATHER");
@@ -406,39 +432,8 @@ void download_and_render_image() {
     }
 
     // Select endpoint based on current display mode
-    const char* endpoint;
-    const char* user_param = nullptr;
-
-    switch (current_mode) {
-        case MODE_WEATHER:
-            endpoint = "weather/seed-e1002.bin";
-            break;
-        case MODE_STOCKS:
-            endpoint = "stocks/seed-e1002.bin";
-            break;
-        case MODE_FRED:
-            endpoint = "fred/seed-e1002.bin";
-            break;
-        case MODE_WEIGHT_USER1_VELOCITY:
-            endpoint = "weight/velocity/seed-e1002.bin";
-            user_param = WEIGHT_USER_1;
-            break;
-        case MODE_WEIGHT_USER1_FORECAST:
-            endpoint = "weight/forecast/seed-e1002.bin";
-            user_param = WEIGHT_USER_1;
-            break;
-        case MODE_WEIGHT_USER2_VELOCITY:
-            endpoint = "weight/velocity/seed-e1002.bin";
-            user_param = WEIGHT_USER_2;
-            break;
-        case MODE_WEIGHT_USER2_FORECAST:
-            endpoint = "weight/forecast/seed-e1002.bin";
-            user_param = WEIGHT_USER_2;
-            break;
-        default:
-            endpoint = "weather/seed-e1002.bin";
-            break;
-    }
+    const char* endpoint = endpoint_for_mode(current_mode);
+    const char* user_param = user_for_mode(current_mode);
 
     HTTPClient http;
     String url =
