@@ -13,6 +13,7 @@ use axum::{
 use clap::Parser;
 use fred::{fetch_fred, generate_fred_svg};
 use serde::Deserialize;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,103 +69,89 @@ struct QueryArgs {
     user: Option<String>,    // User for weight data (defaults to "weight")
 }
 
+const DISPLAY_WIDTH: u16 = 800;
+const DISPLAY_HEIGHT: u16 = 480;
+
+fn render_svg_bytes(svg_content: String, temp_svg_path: &str) -> Vec<u8> {
+    let bitmap = match std::fs::write(temp_svg_path, &svg_content) {
+        Ok(_) => match bitmap::render_svg_to_bitmap(
+            Path::new(temp_svg_path),
+            DISPLAY_WIDTH,
+            DISPLAY_HEIGHT,
+        ) {
+            Ok(bmp) => bmp,
+            Err(e) => {
+                eprintln!("Error rendering SVG: {}", e);
+                bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+            }
+        },
+        Err(e) => {
+            eprintln!("Error writing SVG file: {}", e);
+            bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+        }
+    };
+
+    bitmap.to_bytes()
+}
+
+fn fallback_bitmap_bytes(error_context: &str, e: impl Display) -> Vec<u8> {
+    eprintln!("Error {}: {}", error_context, e);
+    bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT).to_bytes()
+}
+
+fn error_svg(e: impl Display) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+            <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
+        </svg>"#,
+        e
+    )
+}
+
+fn weight_csv_path(state: &AppState, user: Option<&str>) -> String {
+    format!("{}/{}.csv", state.weight_data_dir, user.unwrap_or("weight"))
+}
+
 async fn get_weather_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch weather data and generate SVG
     let bitmap = match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
-        Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/weather.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => bmp,
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            bitmap::generate_test_bitmap(800, 480)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    bitmap::generate_test_bitmap(800, 480)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching weather: {}", e);
-            bitmap::generate_test_bitmap(800, 480)
-        }
+        Ok(weather) => render_svg_bytes(
+            generate_weather_svg(&weather, query.battery_pct),
+            "/tmp/weather.svg",
+        ),
+        Err(e) => fallback_bitmap_bytes("fetching weather", e),
     };
 
-    let bytes = bitmap.to_bytes();
-
-    ([("Content-Type", "application/octet-stream")], bytes)
+    ([("Content-Type", "application/octet-stream")], bitmap)
 }
 
 async fn get_stocks_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch stocks data and generate SVG
     let bitmap = match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
-        Ok(stocks) => {
-            let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/stocks.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => bmp,
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            bitmap::generate_test_bitmap(800, 480)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    bitmap::generate_test_bitmap(800, 480)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching stocks: {}", e);
-            bitmap::generate_test_bitmap(800, 480)
-        }
+        Ok(stocks) => render_svg_bytes(
+            generate_stocks_svg(&stocks, query.battery_pct),
+            "/tmp/stocks.svg",
+        ),
+        Err(e) => fallback_bitmap_bytes("fetching stocks", e),
     };
 
-    let bytes = bitmap.to_bytes();
-
-    ([("Content-Type", "application/octet-stream")], bytes)
+    ([("Content-Type", "application/octet-stream")], bitmap)
 }
 
 async fn get_weather_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch weather data and generate SVG
     match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
         Ok(weather) => {
             let svg_content = generate_weather_svg(&weather, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
-        Err(e) => {
-            let error_svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
-                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
-                </svg>"#,
-                e
-            );
-            ([("Content-Type", "image/svg+xml")], error_svg)
-        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
     }
 }
 
@@ -172,21 +159,12 @@ async fn get_stocks_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch stocks data and generate SVG
     match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
         Ok(stocks) => {
             let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
-        Err(e) => {
-            let error_svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
-                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
-                </svg>"#,
-                e
-            );
-            ([("Content-Type", "image/svg+xml")], error_svg)
-        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
     }
 }
 
@@ -194,61 +172,25 @@ async fn get_fred_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch FRED data and generate SVG
     let bitmap = match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await
     {
-        Ok(fred) => {
-            let svg_content = generate_fred_svg(&fred, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/fred.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => bmp,
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            bitmap::generate_test_bitmap(800, 480)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    bitmap::generate_test_bitmap(800, 480)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching FRED data: {}", e);
-            bitmap::generate_test_bitmap(800, 480)
-        }
+        Ok(fred) => render_svg_bytes(generate_fred_svg(&fred, query.battery_pct), "/tmp/fred.svg"),
+        Err(e) => fallback_bitmap_bytes("fetching FRED data", e),
     };
 
-    let bytes = bitmap.to_bytes();
-
-    ([("Content-Type", "application/octet-stream")], bytes)
+    ([("Content-Type", "application/octet-stream")], bitmap)
 }
 
 async fn get_fred_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    // Fetch FRED data and generate SVG
     match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await {
         Ok(fred) => {
             let svg_content = generate_fred_svg(&fred, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
-        Err(e) => {
-            let error_svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
-                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
-                </svg>"#,
-                e
-            );
-            ([("Content-Type", "image/svg+xml")], error_svg)
-        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
     }
 }
 
@@ -256,62 +198,29 @@ async fn get_weight_forecast_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let user = query.user.as_deref().unwrap_or("weight");
-    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let csv_path = weight_csv_path(&state, query.user.as_deref());
     let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => {
-            let svg_content = generate_forecast_svg(&data, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/weight_forecast.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => bmp,
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            bitmap::generate_test_bitmap(800, 480)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    bitmap::generate_test_bitmap(800, 480)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching weight data: {}", e);
-            bitmap::generate_test_bitmap(800, 480)
-        }
+        Ok(data) => render_svg_bytes(
+            generate_forecast_svg(&data, query.battery_pct),
+            "/tmp/weight_forecast.svg",
+        ),
+        Err(e) => fallback_bitmap_bytes("fetching weight data", e),
     };
 
-    let bytes = bitmap.to_bytes();
-
-    ([("Content-Type", "application/octet-stream")], bytes)
+    ([("Content-Type", "application/octet-stream")], bitmap)
 }
 
 async fn get_weight_forecast_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let user = query.user.as_deref().unwrap_or("weight");
-    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let csv_path = weight_csv_path(&state, query.user.as_deref());
     match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_forecast_svg(&data, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
-        Err(e) => {
-            let error_svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
-                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
-                </svg>"#,
-                e
-            );
-            ([("Content-Type", "image/svg+xml")], error_svg)
-        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
     }
 }
 
@@ -319,62 +228,29 @@ async fn get_weight_velocity_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let user = query.user.as_deref().unwrap_or("weight");
-    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let csv_path = weight_csv_path(&state, query.user.as_deref());
     let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => {
-            let svg_content = generate_velocity_svg(&data, query.battery_pct);
-
-            // Write SVG to temporary file
-            let temp_svg_path = "/tmp/weight_velocity.svg";
-            match std::fs::write(temp_svg_path, &svg_content) {
-                Ok(_) => {
-                    // Render SVG to bitmap
-                    match bitmap::render_svg_to_bitmap(Path::new(temp_svg_path), 800, 480) {
-                        Ok(bmp) => bmp,
-                        Err(e) => {
-                            eprintln!("Error rendering SVG: {}", e);
-                            bitmap::generate_test_bitmap(800, 480)
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error writing SVG file: {}", e);
-                    bitmap::generate_test_bitmap(800, 480)
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error fetching weight data: {}", e);
-            bitmap::generate_test_bitmap(800, 480)
-        }
+        Ok(data) => render_svg_bytes(
+            generate_velocity_svg(&data, query.battery_pct),
+            "/tmp/weight_velocity.svg",
+        ),
+        Err(e) => fallback_bitmap_bytes("fetching weight data", e),
     };
 
-    let bytes = bitmap.to_bytes();
-
-    ([("Content-Type", "application/octet-stream")], bytes)
+    ([("Content-Type", "application/octet-stream")], bitmap)
 }
 
 async fn get_weight_velocity_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let user = query.user.as_deref().unwrap_or("weight");
-    let csv_path = format!("{}/{}.csv", state.weight_data_dir, user);
+    let csv_path = weight_csv_path(&state, query.user.as_deref());
     match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_velocity_svg(&data, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
-        Err(e) => {
-            let error_svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
-                    <text x="400" y="240" text-anchor="middle" font-size="20">Error: {}</text>
-                </svg>"#,
-                e
-            );
-            ([("Content-Type", "image/svg+xml")], error_svg)
-        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
     }
 }
 
