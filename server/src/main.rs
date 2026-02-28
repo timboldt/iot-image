@@ -298,9 +298,17 @@ async fn main() {
         .route("/weight/velocity/svg", get(get_weight_velocity_svg))
         .with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("Failed to bind server listener: {}", e);
+            return;
+        }
+    };
 
     println!("Server listening on http://{}", addr);
 
-    axum::serve(listener, app).await.unwrap();
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Server error: {}", e);
+    }
 }

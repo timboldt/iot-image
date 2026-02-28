@@ -326,9 +326,9 @@ fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
             let dist = delta_e(l, a, b, lab[0], lab[1], lab[2]);
             (color, dist)
         })
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .unwrap()
-        .0
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(color, _)| color)
+        .unwrap_or(EpdColor::White)
 }
 
 /// Render SVG file to e-ink bitmap using Atkinson error diffusion dithering

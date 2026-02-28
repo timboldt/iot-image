@@ -203,8 +203,16 @@ pub async fn fetch_weather(
 /// # Returns
 /// A String containing the SVG markup
 pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> String {
+    if weather.daily.is_empty() {
+        return r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+    <text x="400" y="240" text-anchor="middle" font-size="20">Error: weather.daily is empty</text>
+</svg>"#
+            .to_string();
+    }
+
     // Create timezone offset from the weather data
-    let tz_offset = chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap();
+    let tz_offset =
+        chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap_or_else(|| chrono::Utc.fix());
 
     let mut svg = String::from(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">"#,
@@ -301,7 +309,8 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     // Date header
     let today_time = Utc
         .timestamp_opt(today.dt, 0)
-        .unwrap()
+        .single()
+        .unwrap_or_else(Utc::now)
         .with_timezone(&tz_offset);
     svg.push_str(&format!(
         r#"  <text x="20" y="35" font-family="Arial" font-size="28" font-weight="bold" fill="black">{}</text>"#,
@@ -554,11 +563,13 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     // Sunrise/sunset times (calculated once, used conditionally below)
     let sunrise_time = Utc
         .timestamp_opt(today.sunrise, 0)
-        .unwrap()
+        .single()
+        .unwrap_or_else(Utc::now)
         .with_timezone(&tz_offset);
     let sunset_time = Utc
         .timestamp_opt(today.sunset, 0)
-        .unwrap()
+        .single()
+        .unwrap_or_else(Utc::now)
         .with_timezone(&tz_offset);
 
     // Always show cloudiness/UVI/sunrise/sunset, plus warning titles if present
@@ -669,12 +680,14 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     if !weather.alerts.is_empty() {
         let mut alert_y = detail_y + 190.0;
         for alert in &weather.alerts {
-            let start_time = chrono::DateTime::from_timestamp(alert.start, 0)
-                .unwrap()
-                .with_timezone(&tz_offset);
-            let mut end_time = chrono::DateTime::from_timestamp(alert.end, 0)
-                .unwrap()
-                .with_timezone(&tz_offset);
+            let (Some(start_utc), Some(end_utc)) = (
+                chrono::DateTime::from_timestamp(alert.start, 0),
+                chrono::DateTime::from_timestamp(alert.end, 0),
+            ) else {
+                continue;
+            };
+            let start_time = start_utc.with_timezone(&tz_offset);
+            let mut end_time = end_utc.with_timezone(&tz_offset);
 
             // Round start down (use hour as-is), round end up (add hour if has minutes)
             let start_hour = start_time.hour();
@@ -756,7 +769,8 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
 
         let day_time = Utc
             .timestamp_opt(day.dt, 0)
-            .unwrap()
+            .single()
+            .unwrap_or_else(Utc::now)
             .with_timezone(&tz_offset);
         let day_name = [
             "Monday",

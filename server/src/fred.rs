@@ -338,13 +338,13 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
         .points
         .iter()
         .map(|p| p.value)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let data_max = series
         .points
         .iter()
         .map(|p| p.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(100.0);
 
     let min_val = data_min.min(calm_threshold);
@@ -480,13 +480,13 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
         .points
         .iter()
         .map(|p| p.value)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let data_max = series
         .points
         .iter()
         .map(|p| p.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(100.0);
 
     // Calculate drawdown thresholds based on highest value in chart
@@ -622,13 +622,13 @@ fn generate_credit_spread_chart(
         .points
         .iter()
         .map(|p| p.value)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let data_max = series
         .points
         .iter()
         .map(|p| p.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(10.0);
 
     let min_val = data_min.min(normal_threshold);
@@ -774,13 +774,13 @@ fn generate_yield_curve_chart(
         .points
         .iter()
         .map(|p| p.value)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(-1.0);
     let data_max = series
         .points
         .iter()
         .map(|p| p.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(3.0);
 
     // Ensure thresholds are visible
@@ -884,13 +884,13 @@ fn generate_area_chart_internal(
         .points
         .iter()
         .map(|p| p.value)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let max_val = series
         .points
         .iter()
         .map(|p| p.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(100.0);
     let range = if max_val > min_val {
         max_val - min_val

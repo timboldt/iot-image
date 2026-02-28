@@ -316,7 +316,9 @@ pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Er
         return Err("Failed to process weight data".into());
     }
 
-    let last_state = kalman_states.last().unwrap();
+    let Some(last_state) = kalman_states.last() else {
+        return Err("Failed to process weight data".into());
+    };
     let today = Utc::now();
 
     // Calculate projections

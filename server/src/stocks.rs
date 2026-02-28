@@ -293,13 +293,13 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         .points
         .iter()
         .map(|p| p.low)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let max_price = stock
         .points
         .iter()
         .map(|p| p.high)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(100.0);
 
     let price_range = if max_price > min_price {
