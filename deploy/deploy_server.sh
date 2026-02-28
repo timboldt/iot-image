@@ -90,5 +90,7 @@ echo "  sudo journalctl -u iot-image-server -f"
 echo
 echo "The server should be available at:"
 echo "  http://localhost:8080/weather/seed-e1002.bin"
+echo "  http://localhost:8080/weather-overview/seed-e1002.bin"
 echo "  http://`hostname`.local:8080/weather/seed-e1002.bin"
+echo "  http://`hostname`.local:8080/weather-overview/seed-e1002.bin"
 echo

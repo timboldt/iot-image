@@ -94,4 +94,5 @@ echo "   journalctl --user -u ${SERVICE_NAME} -f"
 echo
 echo "The server will be available at:"
 echo "   http://localhost:8080/weather/seed-e1002.bin"
+echo "   http://localhost:8080/weather-overview/seed-e1002.bin"
 echo

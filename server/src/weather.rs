@@ -17,6 +17,16 @@ pub struct WeatherData {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct WeatherOverviewData {
+    pub lat: f32,
+    pub lon: f32,
+    pub tz: String,
+    pub date: String,
+    pub units: String,
+    pub weather_overview: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct WeatherAlert {
     pub event: String,
     pub description: String,
@@ -192,6 +202,167 @@ pub async fn fetch_weather(
     let weather_data = response.json::<WeatherData>().await?;
 
     Ok(weather_data)
+}
+
+pub async fn fetch_weather_overview(
+    lat: &str,
+    lon: &str,
+    key: &str,
+) -> Result<WeatherOverviewData, Box<dyn std::error::Error>> {
+    let url = format!(
+        "https://api.openweathermap.org/data/3.0/onecall/overview?lat={}&lon={}&units=imperial&appid={}",
+        lat, lon, key
+    );
+
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+    let weather_overview_data = response.json::<WeatherOverviewData>().await?;
+
+    Ok(weather_overview_data)
+}
+
+fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let candidate_len = if current.is_empty() {
+            word.len()
+        } else {
+            current.len() + 1 + word.len()
+        };
+        if candidate_len > max_chars && !current.is_empty() {
+            lines.push(current);
+            current = word.to_string();
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
+}
+
+fn escape_xml_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub fn generate_weather_overview_svg(
+    weather: &WeatherOverviewData,
+    battery_pct: Option<u8>,
+) -> String {
+    let mut svg = String::from(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">"#,
+    );
+    svg.push('\n');
+
+    svg.push_str(r#"  <defs>"#);
+    svg.push('\n');
+    svg.push_str(r#"    <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"    </linearGradient>"#);
+    svg.push('\n');
+    svg.push_str(r#"  </defs>"#);
+    svg.push('\n');
+
+    svg.push_str(r#"  <rect width="800" height="480" fill="white"/>"#);
+    svg.push('\n');
+
+    let geocoder = ReverseGeocoder::new();
+    let coords = (weather.lat as f64, weather.lon as f64);
+    let search_result = geocoder.search(coords);
+    svg.push_str(r#"  <text x="20" y="38" font-family="Arial" font-size="30" font-weight="bold" fill="black">Weather Overview</text>"#);
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <text x="20" y="62" font-family="Arial" font-size="16" fill="black">{}, {} ({})</text>"#,
+        escape_xml_text(&search_result.record.name),
+        escape_xml_text(&weather.date),
+        escape_xml_text(&weather.tz)
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  <line x1="20" y1="76" x2="780" y2="76" stroke="black" stroke-width="1"/>"#);
+    svg.push('\n');
+
+    let lines = wrap_text_lines(&weather.weather_overview, 60);
+    let line_height = 26;
+    let mut y = 108;
+    for line in lines.iter().take(14) {
+        svg.push_str(&format!(
+            r#"  <text x="30" y="{}" font-family="Arial" font-size="24" fill="black">{}</text>"#,
+            y,
+            escape_xml_text(line)
+        ));
+        svg.push('\n');
+        y += line_height;
+    }
+
+    let footer_y = 470;
+    let pct = battery_pct.unwrap_or(50);
+    let battery_bar_width = 100.0;
+    let battery_bar_height = 12.0;
+    let battery_x = 75.0;
+    let battery_y = footer_y as f32 - 10.0;
+    let battery_inset = 2.0;
+    let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
+
+    svg.push_str(&format!(
+        r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
+        footer_y
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
+        battery_x, battery_y, battery_bar_width, battery_bar_height
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  <clipPath id="batteryClip">"#);
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_fill_width,
+        battery_bar_height - battery_inset * 2.0
+    ));
+    svg.push('\n');
+    svg.push_str(r#"  </clipPath>"#);
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
+        battery_x + battery_inset,
+        battery_y + battery_inset,
+        battery_bar_width - battery_inset * 2.0,
+        battery_bar_height - battery_inset * 2.0
+    ));
+    svg.push('\n');
+
+    let now = Local::now();
+    let timestamp = format!(
+        "Last updated: {:02}:{:02}:{:02}",
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    svg.push_str(&format!(
+        r#"  <text x="790" y="{}" text-anchor="end" font-size="12" fill="black">{}</text>"#,
+        footer_y,
+        escape_xml_text(&timestamp)
+    ));
+    svg.push('\n');
+
+    svg.push_str("</svg>");
+    svg
 }
 
 /// Generates an SVG weather display from weather data

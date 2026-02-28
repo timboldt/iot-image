@@ -159,9 +159,11 @@ Once the service is running, test the endpoint:
 ```bash
 # Download the bitmap
 curl http://localhost:8080/weather/seed-e1002.bin -o test.bin
+curl http://localhost:8080/weather-overview/seed-e1002.bin -o test-overview.bin
 
 # Check the file size (should be ~192000 bytes for 800x480 display)
 ls -lh test.bin
+ls -lh test-overview.bin
 ```
 
 ## Updating

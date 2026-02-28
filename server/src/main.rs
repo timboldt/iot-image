@@ -18,7 +18,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use stocks::{fetch_stocks, generate_stocks_svg};
-use weather::{fetch_weather, generate_weather_svg};
+use weather::{
+    fetch_weather, fetch_weather_overview, generate_weather_overview_svg, generate_weather_svg,
+};
 use weight::{fetch_weight_data, generate_forecast_svg, generate_velocity_svg};
 
 #[derive(Parser, Debug)]
@@ -155,6 +157,34 @@ async fn get_weather_svg(
     }
 }
 
+async fn get_weather_overview_bitmap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    let bitmap = match fetch_weather_overview(&state.lat, &state.lon, &state.api_key).await {
+        Ok(weather) => render_svg_bytes(
+            generate_weather_overview_svg(&weather, query.battery_pct),
+            "/tmp/weather_overview.svg",
+        ),
+        Err(e) => fallback_bitmap_bytes("fetching weather overview", e),
+    };
+
+    ([("Content-Type", "application/octet-stream")], bitmap)
+}
+
+async fn get_weather_overview_svg(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryArgs>,
+) -> impl IntoResponse {
+    match fetch_weather_overview(&state.lat, &state.lon, &state.api_key).await {
+        Ok(weather) => {
+            let svg_content = generate_weather_overview_svg(&weather, query.battery_pct);
+            ([("Content-Type", "image/svg+xml")], svg_content)
+        }
+        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
+    }
+}
+
 async fn get_stocks_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
@@ -262,8 +292,8 @@ async fn main() {
     println!("\n=== iot-image Server Starting ===");
     println!("Serving e-ink bitmaps on port {}", args.port);
     println!(
-        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n    - http://localhost:{}/weight/forecast/seed-e1002.bin\n    - http://localhost:{}/weight/velocity/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg\n    - http://localhost:{}/weight/forecast/svg\n    - http://localhost:{}/weight/velocity/svg",
-        args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port
+        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/weather-overview/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n    - http://localhost:{}/weight/forecast/seed-e1002.bin\n    - http://localhost:{}/weight/velocity/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/weather-overview/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg\n    - http://localhost:{}/weight/forecast/svg\n    - http://localhost:{}/weight/velocity/svg",
+        args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port
     );
     println!("Format: Raw e-ink bitmap (EPBM)");
     println!("Display: 800x480, 7 colors");
@@ -281,6 +311,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/weather/seed-e1002.bin", get(get_weather_bitmap))
+        .route(
+            "/weather-overview/seed-e1002.bin",
+            get(get_weather_overview_bitmap),
+        )
         .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
         .route("/fred/seed-e1002.bin", get(get_fred_bitmap))
         .route(
@@ -292,6 +326,7 @@ async fn main() {
             get(get_weight_velocity_bitmap),
         )
         .route("/weather/svg", get(get_weather_svg))
+        .route("/weather-overview/svg", get(get_weather_overview_svg))
         .route("/stocks/svg", get(get_stocks_svg))
         .route("/fred/svg", get(get_fred_svg))
         .route("/weight/forecast/svg", get(get_weight_forecast_svg))

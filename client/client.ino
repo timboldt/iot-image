@@ -7,12 +7,13 @@
 // Display modes
 enum DisplayMode {
     MODE_WEATHER = 0,
-    MODE_STOCKS = 1,
-    MODE_FRED = 2,
-    MODE_WEIGHT_USER1_VELOCITY = 3,
-    MODE_WEIGHT_USER1_FORECAST = 4,
-    MODE_WEIGHT_USER2_VELOCITY = 5,
-    MODE_WEIGHT_USER2_FORECAST = 6
+    MODE_WEATHER_OVERVIEW = 1,
+    MODE_STOCKS = 2,
+    MODE_FRED = 3,
+    MODE_WEIGHT_USER1_VELOCITY = 4,
+    MODE_WEIGHT_USER1_FORECAST = 5,
+    MODE_WEIGHT_USER2_VELOCITY = 6,
+    MODE_WEIGHT_USER2_FORECAST = 7
 };
 
 // RTC memory to persist display mode across deep sleep
@@ -36,6 +37,7 @@ void deep_sleep();
 const char* get_mode_name(DisplayMode mode);
 DisplayMode next_finance_mode(DisplayMode mode);
 DisplayMode next_weight_mode(DisplayMode mode);
+DisplayMode next_weather_mode(DisplayMode mode);
 const char* endpoint_for_mode(DisplayMode mode);
 const char* user_for_mode(DisplayMode mode);
 
@@ -96,6 +98,8 @@ const char* get_mode_name(DisplayMode mode) {
     switch (mode) {
         case MODE_WEATHER:
             return "WEATHER";
+        case MODE_WEATHER_OVERVIEW:
+            return "WEATHER_OVERVIEW";
         case MODE_STOCKS:
             return "STOCKS";
         case MODE_FRED:
@@ -115,6 +119,10 @@ const char* get_mode_name(DisplayMode mode) {
 
 DisplayMode next_finance_mode(DisplayMode mode) {
     return mode == MODE_STOCKS ? MODE_FRED : MODE_STOCKS;
+}
+
+DisplayMode next_weather_mode(DisplayMode mode) {
+    return mode == MODE_WEATHER ? MODE_WEATHER_OVERVIEW : MODE_WEATHER;
 }
 
 DisplayMode next_weight_mode(DisplayMode mode) {
@@ -142,6 +150,8 @@ const char* endpoint_for_mode(DisplayMode mode) {
         case MODE_WEIGHT_USER1_FORECAST:
         case MODE_WEIGHT_USER2_FORECAST:
             return "weight/forecast/seed-e1002.bin";
+        case MODE_WEATHER_OVERVIEW:
+            return "weather-overview/seed-e1002.bin";
         case MODE_WEATHER:
         default:
             return "weather/seed-e1002.bin";
@@ -284,9 +294,9 @@ void check_wake_reason() {
                 Serial.printf("[Wake] Button 2 (Middle) pressed - switching to %s\n",
                               get_mode_name(current_mode));
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY2)) {
-                Serial.println(
-                    "[Wake] Button 3 (Left) pressed - switching to WEATHER");
-                current_mode = MODE_WEATHER;
+                current_mode = next_weather_mode(current_mode);
+                Serial.printf("[Wake] Button 3 (Left) pressed - switching to %s\n",
+                              get_mode_name(current_mode));
             }
 
             delay(200);  // Debounce
