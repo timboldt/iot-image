@@ -38,6 +38,107 @@ pub struct FredData {
     pub duration: usize,
 }
 
+const YIELD_CURVE_WARMUP_DAYS: usize = 60;
+
+struct KalmanFilter {
+    // State vector: [position, velocity]
+    x: [f64; 2],
+    // Covariance matrix: 2x2
+    p: [[f64; 2]; 2],
+    // Process noise
+    q: [[f64; 2]; 2],
+    // Measurement noise
+    r: f64,
+}
+
+impl KalmanFilter {
+    fn new(initial_position: f64) -> Self {
+        Self {
+            x: [initial_position, 0.0],
+            p: [[1.0, 0.0], [0.0, 1.0]],
+            q: [[0.005, 0.0], [0.0, 0.0005]],
+            r: 1.5,
+        }
+    }
+
+    fn predict(&mut self, dt_days: f64) {
+        // State transition: x = F * x, where F = [[1, dt], [0, 1]]
+        let x0 = self.x[0] + self.x[1] * dt_days;
+        let x1 = self.x[1];
+        self.x = [x0, x1];
+
+        // Covariance: P = F * P * F^T + Q
+        let p00 = self.p[0][0]
+            + 2.0 * dt_days * self.p[0][1]
+            + dt_days * dt_days * self.p[1][1]
+            + self.q[0][0];
+        let p01 = self.p[0][1] + dt_days * self.p[1][1] + self.q[0][1];
+        let p10 = p01;
+        let p11 = self.p[1][1] + self.q[1][1];
+        self.p = [[p00, p01], [p10, p11]];
+    }
+
+    fn update(&mut self, measurement: f64) {
+        // Measurement model: H = [1, 0]
+        let innovation = measurement - self.x[0];
+        let innovation_covariance = self.p[0][0] + self.r;
+        let k0 = self.p[0][0] / innovation_covariance;
+        let k1 = self.p[1][0] / innovation_covariance;
+
+        self.x[0] += k0 * innovation;
+        self.x[1] += k1 * innovation;
+
+        // Covariance update: P = (I - K * H) * P
+        let p00 = (1.0 - k0) * self.p[0][0];
+        let p01 = (1.0 - k0) * self.p[0][1];
+        let p10 = self.p[1][0] - k1 * self.p[0][0];
+        let p11 = self.p[1][1] - k1 * self.p[0][1];
+        self.p = [[p00, p01], [p10, p11]];
+    }
+}
+
+fn compute_acceleration_series(points: &[DataPoint]) -> Vec<DataPoint> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    let mut filter = KalmanFilter::new(points[0].value);
+    let mut acceleration_points = Vec::with_capacity(points.len());
+    acceleration_points.push(DataPoint {
+        date: points[0].date.clone(),
+        value: 0.0,
+    });
+
+    let mut previous_velocity = filter.x[1];
+    let mut previous_date = NaiveDate::parse_from_str(&points[0].date, "%Y-%m-%d").ok();
+
+    for point in points.iter().skip(1) {
+        let current_date = NaiveDate::parse_from_str(&point.date, "%Y-%m-%d").ok();
+        let dt_days = if let (Some(prev), Some(curr)) = (previous_date, current_date) {
+            let dt = (curr - prev).num_days().max(1);
+            dt as f64
+        } else {
+            1.0
+        };
+
+        filter.predict(dt_days);
+        filter.update(point.value);
+
+        let acceleration = (filter.x[1] - previous_velocity) / dt_days;
+        acceleration_points.push(DataPoint {
+            date: point.date.clone(),
+            value: acceleration,
+        });
+
+        previous_velocity = filter.x[1];
+        if current_date.is_some() {
+            previous_date = current_date;
+        }
+    }
+
+    acceleration_points
+}
+
 async fn fetch_series(
     api_key: &str,
     series_id: &str,
@@ -112,10 +213,32 @@ pub async fn fetch_fred(
         Local::now().format("%Y%m%d").to_string()
     };
 
+    let chart_end_date =
+        NaiveDate::parse_from_str(&display_end_date, "%Y%m%d").unwrap_or_else(|_| Local::now().date_naive());
+    let chart_start_date = chart_end_date - chrono::Duration::days(duration as i64);
+
     let vix = fetch_series(api_key, "VIXCLS", end_date, duration).await?;
     let sp500 = fetch_series(api_key, "SP500", end_date, duration).await?;
     let credit_spread = fetch_series(api_key, "BAMLH0A0HYM2", end_date, duration).await?;
-    let yield_curve = fetch_series(api_key, "T10Y3M", end_date, duration).await?;
+    let yield_curve = fetch_series(
+        api_key,
+        "T10Y3M",
+        end_date,
+        duration + YIELD_CURVE_WARMUP_DAYS,
+    )
+    .await?;
+    let yield_curve_acceleration = compute_acceleration_series(&yield_curve);
+    let mut yield_curve_acceleration_windowed: Vec<DataPoint> = yield_curve_acceleration
+        .into_iter()
+        .filter(|point| {
+            NaiveDate::parse_from_str(&point.date, "%Y-%m-%d")
+                .map(|d| d >= chart_start_date)
+                .unwrap_or(true)
+        })
+        .collect();
+    if yield_curve_acceleration_windowed.is_empty() {
+        yield_curve_acceleration_windowed = compute_acceleration_series(&yield_curve);
+    }
 
     Ok(FredData {
         vix: SeriesData {
@@ -135,8 +258,8 @@ pub async fn fetch_fred(
         },
         yield_curve: SeriesData {
             symbol: "T10Y3M".to_string(),
-            name: "Yield Curve (10Y-3M)".to_string(),
-            points: yield_curve,
+            name: "Yield Curve Accel (10Y-3M)".to_string(),
+            points: yield_curve_acceleration_windowed,
         },
         end_date: display_end_date,
         duration,
@@ -754,7 +877,7 @@ fn generate_yield_curve_chart(
         ));
 
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:.2}%</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.4} /day^2</text>"#,
             x + width - 5,
             y + 20,
             last.value
@@ -765,9 +888,9 @@ fn generate_yield_curve_chart(
         return svg;
     }
 
-    // Yield curve thresholds (inverted paradigm: Negative = Green, Positive = Red)
-    let inversion_threshold = 0.0;
-    let deep_inversion_threshold = -0.5;
+    // Acceleration semantics: negative is good (green), positive is bad (red)
+    let neutral_threshold = 0.0;
+    let good_threshold = -0.02;
 
     // Calculate data range
     let data_min = series
@@ -784,8 +907,8 @@ fn generate_yield_curve_chart(
         .unwrap_or(3.0);
 
     // Ensure thresholds are visible
-    let min_val = data_min.min(deep_inversion_threshold - 0.5);
-    let max_val = data_max.max(inversion_threshold + 0.5);
+    let min_val = data_min.min(good_threshold);
+    let max_val = data_max.max(neutral_threshold);
     let range = if max_val > min_val {
         max_val - min_val
     } else {
@@ -802,23 +925,23 @@ fn generate_yield_curve_chart(
         gradient_id
     ));
 
-    if max_val <= deep_inversion_threshold {
-        // All deeply inverted (negative) - just green
+    if max_val <= good_threshold {
+        // All good (negative acceleration) - just green
         svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
         svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    } else if min_val >= inversion_threshold {
-        // All positive - just red
+    } else if min_val >= neutral_threshold {
+        // All bad (positive acceleration) - just red
         svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
         svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
     } else {
         // Mixed range
-        let deep_pct = ((deep_inversion_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
-        let zero_pct = ((inversion_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+        let good_pct = ((good_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+        let zero_pct = ((neutral_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
 
         svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
         svg.push_str(&format!(
             r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-            deep_pct
+            good_pct
         ));
         svg.push_str(&format!(
             r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
@@ -849,8 +972,8 @@ fn generate_yield_curve_chart(
     let chart_w = width - 50;
 
     for (threshold, color) in [
-        (inversion_threshold, "red"),
-        (deep_inversion_threshold, "green"),
+        (neutral_threshold, "red"),
+        (good_threshold, "green"),
     ] {
         if threshold >= min_val && threshold <= max_val {
             let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
