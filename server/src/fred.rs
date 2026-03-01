@@ -39,6 +39,7 @@ pub struct FredData {
 }
 
 const YIELD_CURVE_WARMUP_DAYS: usize = 60;
+const YIELD_CURVE_ACCELERATION_SCALE: f64 = 10_000.0;
 
 struct KalmanFilter {
     // State vector: [position, velocity]
@@ -127,7 +128,7 @@ fn compute_acceleration_series(points: &[DataPoint]) -> Vec<DataPoint> {
         let acceleration = (filter.x[1] - previous_velocity) / dt_days;
         acceleration_points.push(DataPoint {
             date: point.date.clone(),
-            value: acceleration,
+            value: acceleration * YIELD_CURVE_ACCELERATION_SCALE,
         });
 
         previous_velocity = filter.x[1];
@@ -877,7 +878,7 @@ fn generate_yield_curve_chart(
         ));
 
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.4} /day^2</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.4} /day^2 ×10^4</text>"#,
             x + width - 5,
             y + 20,
             last.value
@@ -890,7 +891,7 @@ fn generate_yield_curve_chart(
 
     // Acceleration semantics: negative is good (green), positive is bad (red)
     let neutral_threshold = 0.0;
-    let good_threshold = -0.02;
+    let good_threshold = -0.02 * YIELD_CURVE_ACCELERATION_SCALE;
 
     // Calculate data range
     let data_min = series
