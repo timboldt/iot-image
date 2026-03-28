@@ -219,8 +219,6 @@ pub fn calculate_decay_projection(
     lookback_days: i64,
 ) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>, Option<f64>) {
     let mut projection = Vec::new();
-    let mut stall_point = None;
-    let mut stall_weight = None;
 
     // Extract v₀ and W₀ from latest state
     let v0 = last_state.velocity_lbs_per_day;
@@ -264,65 +262,43 @@ pub fn calculate_decay_projection(
 
     // Biological model: tendency to slow down as you approach a "set point" or goal.
     // This is modeled as velocity decaying exponentially: v(t) = v0 * exp(-kt)
-    // The braking constant k = -a/v0. If k > 0, the velocity will decay to zero.
-    let k = if v0.abs() > 1e-6
-        && ((v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0))
-    {
-        Some(-acceleration / v0)
+    // The braking constant k = -a/v0.
+    // We assume a minimum biological resistance (k_min = 0.002) even if the
+    // current data is linear or accelerating, as biological systems always
+    // eventually resist further change.
+    let k_min = 0.002;
+    let k = if v0.abs() > 1e-6 {
+        (-acceleration / v0).max(k_min)
     } else {
-        None
+        k_min
     };
 
     // Calculate the ultimate weight limit (asymptotic weight)
-    if let Some(k_val) = k {
-        // As t -> ∞, W(t) -> W0 + v0/k
-        stall_weight = Some(w0 + v0 / k_val);
-    } else if (v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0) {
-        // Quadratic vertex: when v(t) = v0 + a*t = 0
-        stall_weight = Some(w0 - 0.5 * v0 * v0 / acceleration);
-    }
+    // As t -> ∞, W(t) -> W0 + v0/k
+    let stall_weight = Some(w0 + v0 / k);
+
+    // Calculate the stall point (marker): when 95% of velocity is lost (t = 3/k)
+    let t_stall = 3.0 / k;
+    let stall_timestamp = last_state.timestamp + Duration::days(t_stall as i64);
+    let stall_weight_lbs = w0 - (v0 / k) * (-k * t_stall).exp_m1();
+    let stall_point = Some(ProjectionPoint {
+        timestamp: stall_timestamp,
+        weight_lbs: stall_weight_lbs,
+    });
 
     // Generate projection
     for day in 0..=days_ahead {
         let t = day as f64;
         let timestamp = last_state.timestamp + Duration::days(day);
 
-        let weight_lbs = if let Some(k_val) = k {
-            // Exponential model: W(t) = W0 + (v0/k) * (1 - exp(-kt))
-            // Using exp_m1(x) = exp(x) - 1 for better numerical stability near 0
-            w0 - (v0 / k_val) * (-k_val * t).exp_m1()
-        } else {
-            // Fallback to quadratic formula: W(t) = W₀ + v₀*t + 0.5*a*t²
-            // This applies if the user is currently accelerating or if v0 is near 0.
-            w0 + v0 * t + 0.5 * acceleration * t * t
-        };
+        // Exponential model: W(t) = W0 + (v0/k) * (1 - exp(-kt))
+        // Using exp_m1(x) = exp(x) - 1 for better numerical stability near 0
+        let weight_lbs = w0 - (v0 / k) * (-k * t).exp_m1();
 
         projection.push(ProjectionPoint {
             timestamp,
             weight_lbs,
         });
-
-        // Determine stall point (visual marker on the graph)
-        if let Some(k_val) = k {
-            // For exponential decay, we define the "stall point" as when 95% of the
-            // velocity has been lost (approx t = 3/k).
-            let t_stall = 3.0 / k_val;
-            if t >= t_stall && stall_point.is_none() {
-                stall_point = Some(ProjectionPoint {
-                    timestamp,
-                    weight_lbs,
-                });
-            }
-        } else if (v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0) {
-            let t_stall = -v0 / acceleration;
-            if t >= t_stall && stall_point.is_none() {
-                stall_point = Some(ProjectionPoint {
-                    timestamp,
-                    weight_lbs,
-                });
-                break; // Stop at the vertex to prevent the curve from reversing
-            }
-        }
     }
 
     (projection, stall_point, stall_weight)
@@ -333,7 +309,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(120, "green"), (90, "blue"), (60, "red")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(120, "blue"), (90, "green"), (60, "orange"), (30, "red")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
@@ -1164,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decay_projection_quadratic_fallback() {
+    fn test_decay_projection_no_measured_stall() {
         let now = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
         let last_state = KalmanState {
             timestamp: now,
@@ -1172,7 +1148,7 @@ mod tests {
             velocity_lbs_per_day: -1.0,
         };
 
-        // Speeding up: v goes from -0.5 to -1.0 => acceleration = -0.05
+        // Speeding up (accelerating): v goes from -0.5 to -1.0 => acceleration = -0.05
         let mut kalman_states = Vec::new();
         for i in 0..11 {
             let days_ago = 10 - i;
@@ -1185,11 +1161,20 @@ mod tests {
             });
         }
 
-        let (projection, _stall_point, _stall_weight) =
+        let (projection, stall_point, stall_weight) =
             calculate_decay_projection(&last_state, &kalman_states, 90, 30);
 
+        assert!(stall_point.is_some());
+        assert!(stall_weight.is_some());
+
+        // Since we are accelerating, measured k = -(-0.05)/(-1.0) = -0.05.
+        // The floor k_min = 0.002 should be used.
+        // Stall weight = 200 + (-1.0 / 0.002) = 200 - 500 = -300.0
+        assert!((stall_weight.unwrap() - (-300.0)).abs() < 1e-6);
+
         let last_point = projection.last().unwrap();
-        // Quadratic: 200 + (-1)*90 + 0.5*(-0.05)*90^2 = 200 - 90 - 202.5 = -92.5
-        assert!((last_point.weight_lbs - (-92.5)).abs() < 1.0);
+        // W(90) = 200 - (1/0.002)*(1 - exp(-0.002 * 90))
+        // 200 - 500*(1 - exp(-0.18)) = 200 - 500*(1 - 0.83527) = 200 - 82.36 = 117.63
+        assert!((last_point.weight_lbs - 117.63).abs() < 1.0);
     }
 }
