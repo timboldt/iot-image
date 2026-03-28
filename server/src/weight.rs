@@ -299,7 +299,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(90, "purple"), (60, "red"), (30, "orange"), (15, "green")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(90, "green"), (60, "blue"), (30, "red")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
@@ -577,7 +577,7 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         }
     }
 
-    // Linear projection (blue dashed)
+    // Linear projection (black dashed)
     if !data.linear_projection.is_empty() {
         let mut path = String::from("M");
         for (i, point) in data.linear_projection.iter().enumerate() {
@@ -592,7 +592,7 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
             }
         }
         svg.push_str(&format!(
-            r#"<path d="{}" stroke="blue" stroke-width="2" stroke-dasharray="5,3" fill="none"/>"#,
+            r#"<path d="{}" stroke="black" stroke-width="2" stroke-dasharray="5,3" fill="none"/>"#,
             path
         ));
     }
