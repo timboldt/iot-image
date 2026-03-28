@@ -39,7 +39,7 @@ pub struct FredData {
 }
 
 const YIELD_CURVE_WARMUP_DAYS: usize = 60;
-const YIELD_CURVE_ACCELERATION_SCALE: f64 = 10_000.0;
+const YIELD_CURVE_VELOCITY_SCALE: f64 = 1_000.0;
 
 struct KalmanFilter {
     // State vector: [position, velocity]
@@ -98,19 +98,18 @@ impl KalmanFilter {
     }
 }
 
-fn compute_acceleration_series(points: &[DataPoint]) -> Vec<DataPoint> {
+fn compute_velocity_series(points: &[DataPoint]) -> Vec<DataPoint> {
     if points.is_empty() {
         return Vec::new();
     }
 
     let mut filter = KalmanFilter::new(points[0].value);
-    let mut acceleration_points = Vec::with_capacity(points.len());
-    acceleration_points.push(DataPoint {
+    let mut velocity_points = Vec::with_capacity(points.len());
+    velocity_points.push(DataPoint {
         date: points[0].date.clone(),
         value: 0.0,
     });
 
-    let mut previous_velocity = filter.x[1];
     let mut previous_date = NaiveDate::parse_from_str(&points[0].date, "%Y-%m-%d").ok();
 
     for point in points.iter().skip(1) {
@@ -125,19 +124,18 @@ fn compute_acceleration_series(points: &[DataPoint]) -> Vec<DataPoint> {
         filter.predict(dt_days);
         filter.update(point.value);
 
-        let acceleration = (filter.x[1] - previous_velocity) / dt_days;
-        acceleration_points.push(DataPoint {
+        let velocity = filter.x[1];
+        velocity_points.push(DataPoint {
             date: point.date.clone(),
-            value: acceleration * YIELD_CURVE_ACCELERATION_SCALE,
+            value: velocity * YIELD_CURVE_VELOCITY_SCALE,
         });
 
-        previous_velocity = filter.x[1];
         if current_date.is_some() {
             previous_date = current_date;
         }
     }
 
-    acceleration_points
+    velocity_points
 }
 
 async fn fetch_series(
@@ -214,8 +212,8 @@ pub async fn fetch_fred(
         Local::now().format("%Y%m%d").to_string()
     };
 
-    let chart_end_date =
-        NaiveDate::parse_from_str(&display_end_date, "%Y%m%d").unwrap_or_else(|_| Local::now().date_naive());
+    let chart_end_date = NaiveDate::parse_from_str(&display_end_date, "%Y%m%d")
+        .unwrap_or_else(|_| Local::now().date_naive());
     let chart_start_date = chart_end_date - chrono::Duration::days(duration as i64);
 
     let vix = fetch_series(api_key, "VIXCLS", end_date, duration).await?;
@@ -228,8 +226,8 @@ pub async fn fetch_fred(
         duration + YIELD_CURVE_WARMUP_DAYS,
     )
     .await?;
-    let yield_curve_acceleration = compute_acceleration_series(&yield_curve);
-    let mut yield_curve_acceleration_windowed: Vec<DataPoint> = yield_curve_acceleration
+    let yield_curve_velocity = compute_velocity_series(&yield_curve);
+    let mut yield_curve_velocity_windowed: Vec<DataPoint> = yield_curve_velocity
         .into_iter()
         .filter(|point| {
             NaiveDate::parse_from_str(&point.date, "%Y-%m-%d")
@@ -237,8 +235,8 @@ pub async fn fetch_fred(
                 .unwrap_or(true)
         })
         .collect();
-    if yield_curve_acceleration_windowed.is_empty() {
-        yield_curve_acceleration_windowed = compute_acceleration_series(&yield_curve);
+    if yield_curve_velocity_windowed.is_empty() {
+        yield_curve_velocity_windowed = compute_velocity_series(&yield_curve);
     }
 
     Ok(FredData {
@@ -259,8 +257,8 @@ pub async fn fetch_fred(
         },
         yield_curve: SeriesData {
             symbol: "T10Y3M".to_string(),
-            name: "Yield Curve Accel (10Y-3M)".to_string(),
-            points: yield_curve_acceleration_windowed,
+            name: "Yield Curve Velocity (10Y-3M)".to_string(),
+            points: yield_curve_velocity_windowed,
         },
         end_date: display_end_date,
         duration,
@@ -878,7 +876,7 @@ fn generate_yield_curve_chart(
         ));
 
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.4} /day^2 ×10^4</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.3} /day ×10^3</text>"#,
             x + width - 5,
             y + 20,
             last.value
@@ -889,9 +887,9 @@ fn generate_yield_curve_chart(
         return svg;
     }
 
-    // Acceleration semantics: negative is good (green), positive is bad (red)
+    // Velocity semantics: negative is good (green), positive is bad (red)
     let neutral_threshold = 0.0;
-    let good_threshold = -0.02 * YIELD_CURVE_ACCELERATION_SCALE;
+    let good_threshold = -0.02 * YIELD_CURVE_VELOCITY_SCALE;
 
     // Calculate data range
     let data_min = series
@@ -927,11 +925,11 @@ fn generate_yield_curve_chart(
     ));
 
     if max_val <= good_threshold {
-        // All good (negative acceleration) - just green
+        // All good (negative velocity) - just green
         svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
         svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
     } else if min_val >= neutral_threshold {
-        // All bad (positive acceleration) - just red
+        // All bad (positive velocity) - just red
         svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
         svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
     } else {
@@ -972,10 +970,7 @@ fn generate_yield_curve_chart(
     let chart_h = height - 55;
     let chart_w = width - 50;
 
-    for (threshold, color) in [
-        (neutral_threshold, "red"),
-        (good_threshold, "green"),
-    ] {
+    for (threshold, color) in [(neutral_threshold, "red"), (good_threshold, "green")] {
         if threshold >= min_val && threshold <= max_val {
             let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
             svg.push_str(&format!(
