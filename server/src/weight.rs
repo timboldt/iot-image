@@ -32,6 +32,7 @@ pub struct DecayProjection {
     pub lookback_days: i64,
     pub points: Vec<ProjectionPoint>,
     pub stall_point: Option<ProjectionPoint>,
+    pub stall_weight: Option<f64>,
     pub color: String,
 }
 
@@ -216,9 +217,10 @@ pub fn calculate_decay_projection(
     kalman_states: &[KalmanState],
     days_ahead: i64,
     lookback_days: i64,
-) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>) {
+) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>, Option<f64>) {
     let mut projection = Vec::new();
     let mut stall_point = None;
+    let mut stall_weight = None;
 
     // Extract v₀ and W₀ from latest state
     let v0 = last_state.velocity_lbs_per_day;
@@ -233,14 +235,15 @@ pub fn calculate_decay_projection(
 
     let acceleration = if recent_states.len() >= 2 {
         // Linear regression: v(t) = v₀ + a*t
+        // Using actual time offsets for more accuracy than record index
         let n = recent_states.len() as f64;
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
         let mut sum_xy = 0.0;
         let mut sum_x2 = 0.0;
 
-        for (i, state) in recent_states.iter().enumerate() {
-            let x = i as f64;
+        for state in &recent_states {
+            let x = (state.timestamp - last_state.timestamp).num_seconds() as f64 / 86400.0;
             let y = state.velocity_lbs_per_day;
 
             sum_x += x;
@@ -249,49 +252,80 @@ pub fn calculate_decay_projection(
             sum_x2 += x * x;
         }
 
-        // Slope = acceleration in lbs/day/day (per data point)
-        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x);
-
-        // Convert from per-datapoint to per-day
-        slope / (lookback_days as f64 / n)
+        let denominator = n * sum_x2 - sum_x * sum_x;
+        if denominator.abs() > 1e-9 {
+            (n * sum_xy - sum_x * sum_y) / denominator
+        } else {
+            0.0
+        }
     } else {
-        // Fallback if insufficient data
         0.0
     };
 
-    // Calculate stall time: when v(t) = v₀ + a*t = 0
-    let t_stall = if acceleration > 0.0 && v0 < 0.0 {
-        Some(-v0 / acceleration)
+    // Biological model: tendency to slow down as you approach a "set point" or goal.
+    // This is modeled as velocity decaying exponentially: v(t) = v0 * exp(-kt)
+    // The braking constant k = -a/v0. If k > 0, the velocity will decay to zero.
+    let k = if v0.abs() > 1e-6
+        && ((v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0))
+    {
+        Some(-acceleration / v0)
     } else {
         None
     };
 
-    // Generate projection using quadratic formula: W(t) = W₀ + v₀*t + 0.5*a*t²
+    // Calculate the ultimate weight limit (asymptotic weight)
+    if let Some(k_val) = k {
+        // As t -> ∞, W(t) -> W0 + v0/k
+        stall_weight = Some(w0 + v0 / k_val);
+    } else if (v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0) {
+        // Quadratic vertex: when v(t) = v0 + a*t = 0
+        stall_weight = Some(w0 - 0.5 * v0 * v0 / acceleration);
+    }
+
+    // Generate projection
     for day in 0..=days_ahead {
         let t = day as f64;
         let timestamp = last_state.timestamp + Duration::days(day);
 
-        // Quadratic weight projection
-        let weight_lbs = w0 + v0 * t + 0.5 * acceleration * t * t;
+        let weight_lbs = if let Some(k_val) = k {
+            // Exponential model: W(t) = W0 + (v0/k) * (1 - exp(-kt))
+            // Using exp_m1(x) = exp(x) - 1 for better numerical stability near 0
+            w0 - (v0 / k_val) * (-k_val * t).exp_m1()
+        } else {
+            // Fallback to quadratic formula: W(t) = W₀ + v₀*t + 0.5*a*t²
+            // This applies if the user is currently accelerating or if v0 is near 0.
+            w0 + v0 * t + 0.5 * acceleration * t * t
+        };
 
         projection.push(ProjectionPoint {
             timestamp,
             weight_lbs,
         });
 
-        // Check if we've passed the stall point
-        if let Some(stall_days) = t_stall {
-            if t >= stall_days && stall_point.is_none() {
+        // Determine stall point (visual marker on the graph)
+        if let Some(k_val) = k {
+            // For exponential decay, we define the "stall point" as when 95% of the
+            // velocity has been lost (approx t = 3/k).
+            let t_stall = 3.0 / k_val;
+            if t >= t_stall && stall_point.is_none() {
                 stall_point = Some(ProjectionPoint {
                     timestamp,
                     weight_lbs,
                 });
-                break;
+            }
+        } else if (v0 < 0.0 && acceleration > 0.0) || (v0 > 0.0 && acceleration < 0.0) {
+            let t_stall = -v0 / acceleration;
+            if t >= t_stall && stall_point.is_none() {
+                stall_point = Some(ProjectionPoint {
+                    timestamp,
+                    weight_lbs,
+                });
+                break; // Stop at the vertex to prevent the curve from reversing
             }
         }
     }
 
-    (projection, stall_point)
+    (projection, stall_point, stall_weight)
 }
 
 // ============================================================================
@@ -299,7 +333,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(90, "green"), (60, "blue"), (30, "red")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(120, "green"), (90, "blue"), (60, "red")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
@@ -327,12 +361,13 @@ pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Er
     // Calculate all decay projections
     let mut decay_projections = Vec::new();
     for &(lookback_days, color) in DECAY_CONFIGS {
-        let (points, stall_point) =
+        let (points, stall_point, stall_weight) =
             calculate_decay_projection(last_state, &kalman_states, 90, lookback_days);
         decay_projections.push(DecayProjection {
             lookback_days,
             points,
             stall_point,
+            stall_weight,
             color: color.to_string(),
         });
     }
@@ -674,11 +709,18 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
             y,
             projection.color
         ));
+
+        let label = if let Some(sw) = projection.stall_weight {
+            format!("{}d Decay ({:.1})", projection.lookback_days, sw)
+        } else {
+            format!("{}d Decay", projection.lookback_days)
+        };
+
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="11" fill="black">{}d Decay</text>"#,
+            r#"<text x="{}" y="{}" font-size="11" fill="black">{}</text>"#,
             legend_x + 25,
             y + 4,
-            projection.lookback_days
+            label
         ));
     }
 
@@ -1075,4 +1117,79 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     svg.push_str("</svg>");
     svg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn test_decay_projection_exponential() {
+        let now = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let last_state = KalmanState {
+            timestamp: now,
+            weight_lbs: 200.0,
+            velocity_lbs_per_day: -1.0, // Losing 1 lb per day
+        };
+
+        // Create states showing velocity slowing down
+        // v(t) = v0 + a*t
+        let mut kalman_states = Vec::new();
+        for i in 0..11 {
+            let days_ago = 10 - i;
+            let t = now - Duration::days(days_ago);
+            // v(-10) = -2.0, v(0) = -1.0 => a = 0.1
+            let v = -1.0 + (i as f64 - 10.0) * 0.1;
+            kalman_states.push(KalmanState {
+                timestamp: t,
+                weight_lbs: 200.0,
+                velocity_lbs_per_day: v,
+            });
+        }
+
+        let (projection, stall_point, stall_weight) =
+            calculate_decay_projection(&last_state, &kalman_states, 90, 30);
+
+        assert!(!projection.is_empty());
+        assert!(stall_point.is_some());
+        assert!(stall_weight.is_some());
+
+        let last_point = projection.last().unwrap();
+        // Limit should be W0 - v0^2/a = 200 - (-1)^2/0.1 = 190
+        // At t=90, should be very close to 190
+        assert!(last_point.weight_lbs > 190.0);
+        assert!(last_point.weight_lbs < 191.0);
+        assert!((stall_weight.unwrap() - 190.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decay_projection_quadratic_fallback() {
+        let now = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let last_state = KalmanState {
+            timestamp: now,
+            weight_lbs: 200.0,
+            velocity_lbs_per_day: -1.0,
+        };
+
+        // Speeding up: v goes from -0.5 to -1.0 => acceleration = -0.05
+        let mut kalman_states = Vec::new();
+        for i in 0..11 {
+            let days_ago = 10 - i;
+            let t = now - Duration::days(days_ago);
+            let v = -1.0 - (i as f64 - 10.0) * 0.05;
+            kalman_states.push(KalmanState {
+                timestamp: t,
+                weight_lbs: 200.0,
+                velocity_lbs_per_day: v,
+            });
+        }
+
+        let (projection, _stall_point, _stall_weight) =
+            calculate_decay_projection(&last_state, &kalman_states, 90, 30);
+
+        let last_point = projection.last().unwrap();
+        // Quadratic: 200 + (-1)*90 + 0.5*(-0.05)*90^2 = 200 - 90 - 202.5 = -92.5
+        assert!((last_point.weight_lbs - (-92.5)).abs() < 1.0);
+    }
 }
