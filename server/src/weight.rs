@@ -19,6 +19,12 @@ pub struct KalmanState {
     pub timestamp: DateTime<Utc>,
     pub weight_lbs: f64,
     pub velocity_lbs_per_day: f64,
+    /// P[0][0]: variance of weight estimate
+    pub weight_variance: f64,
+    /// P[0][1]: covariance between weight and velocity
+    pub weight_velocity_covariance: f64,
+    /// P[1][1]: variance of velocity estimate
+    pub velocity_variance: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +176,9 @@ pub fn process_weight_data(readings: &[WeightReading]) -> Vec<KalmanState> {
         timestamp: readings[0].timestamp,
         weight_lbs: filter.x[0],
         velocity_lbs_per_day: filter.x[1],
+        weight_variance: filter.p[0][0],
+        weight_velocity_covariance: filter.p[0][1],
+        velocity_variance: filter.p[1][1],
     });
 
     // Process subsequent readings
@@ -183,6 +192,9 @@ pub fn process_weight_data(readings: &[WeightReading]) -> Vec<KalmanState> {
             timestamp: readings[i].timestamp,
             weight_lbs: filter.x[0],
             velocity_lbs_per_day: filter.x[1],
+            weight_variance: filter.p[0][0],
+            weight_velocity_covariance: filter.p[0][1],
+            velocity_variance: filter.p[1][1],
         });
     }
 
@@ -415,6 +427,38 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         margin_top as f64 + (y_max - weight) / (y_max - y_min) * chart_height as f64
     };
 
+    // ±1 stddev band using Kalman covariance.
+    // Past: per-point sqrt(P[0][0]) reflects how certain the filter is at each step.
+    // Future: propagate the last state's covariance forward in time via
+    //   Var(W(t)) = P00 + 2t·P01 + t²·P11  (linear Kalman predict step).
+    let mut ci_upper: Vec<(f64, f64)> = Vec::new();
+    let mut ci_lower: Vec<(f64, f64)> = Vec::new();
+
+    for state in &data.kalman_states {
+        let days = days_from_today(state.timestamp);
+        if days >= x_min && days <= 0.0 {
+            let half_width = state.weight_variance.sqrt();
+            ci_upper.push((x_to_pixel(days), y_to_pixel(state.weight_lbs + half_width)));
+            ci_lower.push((x_to_pixel(days), y_to_pixel(state.weight_lbs - half_width)));
+        }
+    }
+
+    if let Some(last) = data.kalman_states.last() {
+        let p00 = last.weight_variance;
+        let p01 = last.weight_velocity_covariance;
+        let p11 = last.velocity_variance;
+        for point in &data.linear_projection {
+            let days = days_from_today(point.timestamp);
+            if days > 0.0 && days <= x_max {
+                let t = days;
+                let propagated_var = (p00 + 2.0 * t * p01 + t * t * p11).max(0.0);
+                let half_width = propagated_var.sqrt();
+                ci_upper.push((x_to_pixel(days), y_to_pixel(point.weight_lbs + half_width)));
+                ci_lower.push((x_to_pixel(days), y_to_pixel(point.weight_lbs - half_width)));
+            }
+        }
+    }
+
     // Start building SVG
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}">"#,
@@ -553,6 +597,27 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         y_val += y_step;
     }
 
+    // Confidence interval area (translucent pink)
+    if ci_upper.len() >= 2 && ci_lower.len() >= 2 {
+        let mut ci_path = String::new();
+        for (i, (x, y)) in ci_upper.iter().enumerate() {
+            if i == 0 {
+                ci_path.push_str(&format!("M{},{}", x, y));
+            } else {
+                ci_path.push_str(&format!(" L{},{}", x, y));
+            }
+        }
+        for (x, y) in ci_lower.iter().rev() {
+            ci_path.push_str(&format!(" L{},{}", x, y));
+        }
+        ci_path.push_str(" Z");
+
+        svg.push_str(&format!(
+            r##"<path d="{}" fill="#ff69b4" opacity="0.25" stroke="none"/>"##,
+            ci_path
+        ));
+    }
+
     // Raw readings scatter (light gray circles)
     for reading in &data.raw_readings {
         let days = days_from_today(reading.timestamp);
@@ -674,9 +739,21 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         legend_y + legend_spacing + 4
     ));
 
+    // Legend: 95% confidence interval
+    svg.push_str(&format!(
+        r##"<rect x="{}" y="{}" width="20" height="8" fill="#ff69b4" opacity="0.25"/>"##,
+        legend_x,
+        legend_y + 2 * legend_spacing - 6
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" font-size="11" fill="black">±1σ Uncertainty Band</text>"#,
+        legend_x + 25,
+        legend_y + 2 * legend_spacing + 4
+    ));
+
     // Legend: Decay projections
     for (i, projection) in data.decay_projections.iter().enumerate() {
-        let y = legend_y + ((i + 2) * legend_spacing as usize) as i32;
+        let y = legend_y + ((i + 3) * legend_spacing as usize) as i32;
         svg.push_str(&format!(
             r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2"/>"#,
             legend_x,
@@ -734,11 +811,11 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
     let bottom_height = total_chart_height - top_height - gap; // 40% for velocity
     let chart_width = width - margin_left - margin_right;
 
-    // Date range: past 90 days
-    let x_min = data.today - Duration::days(90);
-    let total_days = 90.0;
+    // Date range: past 180 days
+    let x_min = data.today - Duration::days(180);
+    let total_days = 180.0;
 
-    // Top panel Y-axis: weight range (only for past 90 days)
+    // Top panel Y-axis: weight range (only for past 180 days)
     let mut weight_min = f64::MAX;
     let mut weight_max = f64::MIN;
     for reading in &data.raw_readings {
@@ -974,7 +1051,43 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     // ===== TOP PANEL: Weight Chart =====
 
-    // Draw actual weight readings as gray dots (past 90 days only)
+    // Confidence interval area (translucent pink, past 180 days only).
+    // Uses per-point Kalman weight variance: sqrt(P[0][0]) narrows as the filter converges.
+    if !data.kalman_states.is_empty() {
+        let mut upper_path = String::new();
+        let mut lower_points: Vec<(f64, f64)> = Vec::new();
+        let mut first = true;
+
+        for state in data.kalman_states.iter() {
+            if state.timestamp >= x_min {
+                let x = x_to_pixel(state.timestamp);
+                let half_width = 1.96 * state.weight_variance.sqrt();
+                let y_upper = weight_to_pixel(state.weight_lbs + half_width);
+                let y_lower = weight_to_pixel(state.weight_lbs - half_width);
+
+                if first {
+                    upper_path.push_str(&format!("M{},{}", x, y_upper));
+                    first = false;
+                } else {
+                    upper_path.push_str(&format!(" L{},{}", x, y_upper));
+                }
+                lower_points.push((x, y_lower));
+            }
+        }
+
+        if !upper_path.is_empty() && !lower_points.is_empty() {
+            for (x, y) in lower_points.iter().rev() {
+                upper_path.push_str(&format!(" L{},{}", x, y));
+            }
+            upper_path.push_str(" Z");
+            svg.push_str(&format!(
+                r##"<path d="{}" fill="#ff69b4" opacity="0.25" stroke="none"/>"##,
+                upper_path
+            ));
+        }
+    }
+
+    // Draw actual weight readings as gray dots (past 180 days only)
     for reading in &data.raw_readings {
         if reading.timestamp >= x_min {
             let x = x_to_pixel(reading.timestamp);
@@ -986,7 +1099,7 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         }
     }
 
-    // Draw Kalman filtered line (blue solid, past 90 days only)
+    // Draw Kalman filtered line (blue solid, past 180 days only)
     if !data.kalman_states.is_empty() {
         let mut path = String::new();
         let mut first = true;
@@ -1034,6 +1147,16 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         width - margin_right - 172,
         margin_top + 34
     ));
+    svg.push_str(&format!(
+        r##"<rect x="{}" y="{}" width="20" height="8" fill="#ff69b4" opacity="0.25"/>"##,
+        width - margin_right - 200,
+        margin_top + 41
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" font-size="11" fill="black">95% Confidence Interval</text>"#,
+        width - margin_right - 172,
+        margin_top + 48
+    ));
 
     // ===== BOTTOM PANEL: Velocity Chart =====
 
@@ -1047,7 +1170,7 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
         zero_y
     ));
 
-    // Area chart (velocity curve with red fill, past 90 days only, clipped at +/-2)
+    // Area chart (velocity curve with red fill, past 180 days only, clipped at +/-2)
     if !data.kalman_states.is_empty() {
         let mut area_path = String::new();
         let mut line_path = String::new();
@@ -1107,6 +1230,9 @@ mod tests {
             timestamp: now,
             weight_lbs: 200.0,
             velocity_lbs_per_day: -1.0, // Losing 1 lb per day
+            weight_variance: 1.0,
+            weight_velocity_covariance: 0.0,
+            velocity_variance: 1.0,
         };
 
         // Create states showing velocity slowing down
@@ -1121,6 +1247,9 @@ mod tests {
                 timestamp: t,
                 weight_lbs: 200.0,
                 velocity_lbs_per_day: v,
+                weight_variance: 1.0,
+                weight_velocity_covariance: 0.0,
+                velocity_variance: 1.0,
             });
         }
 
@@ -1146,6 +1275,9 @@ mod tests {
             timestamp: now,
             weight_lbs: 200.0,
             velocity_lbs_per_day: -1.0,
+            weight_variance: 1.0,
+            weight_velocity_covariance: 0.0,
+            velocity_variance: 1.0,
         };
 
         // Speeding up (accelerating): v goes from -0.5 to -1.0 => acceleration = -0.05
@@ -1158,6 +1290,9 @@ mod tests {
                 timestamp: t,
                 weight_lbs: 200.0,
                 velocity_lbs_per_day: v,
+                weight_variance: 1.0,
+                weight_velocity_covariance: 0.0,
+                velocity_variance: 1.0,
             });
         }
 
