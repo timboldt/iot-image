@@ -69,6 +69,8 @@ struct QueryArgs {
     date: Option<String>,    // Optional end date in YYYYMMDD format
     duration: Option<usize>, // Optional duration in days
     user: Option<String>,    // User for weight data (defaults to "weight")
+    lat: Option<String>,
+    lon: Option<String>,
 }
 
 const DISPLAY_WIDTH: u16 = 800;
@@ -114,11 +116,19 @@ fn weight_csv_path(state: &AppState, user: Option<&str>) -> String {
     format!("{}/{}.csv", state.weight_data_dir, user.unwrap_or("weight"))
 }
 
+fn weather_coordinates<'a>(state: &'a AppState, query: &'a QueryArgs) -> (&'a str, &'a str) {
+    (
+        query.lat.as_deref().unwrap_or(&state.lat),
+        query.lon.as_deref().unwrap_or(&state.lon),
+    )
+}
+
 async fn get_weather_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let bitmap = match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
+    let (lat, lon) = weather_coordinates(&state, &query);
+    let bitmap = match fetch_weather(lat, lon, &state.api_key).await {
         Ok(weather) => render_svg_bytes(
             generate_weather_svg(&weather, query.battery_pct),
             "/tmp/weather.svg",
@@ -148,7 +158,8 @@ async fn get_weather_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    match fetch_weather(&state.lat, &state.lon, &state.api_key).await {
+    let (lat, lon) = weather_coordinates(&state, &query);
+    match fetch_weather(lat, lon, &state.api_key).await {
         Ok(weather) => {
             let svg_content = generate_weather_svg(&weather, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -161,7 +172,8 @@ async fn get_weather_overview_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let bitmap = match fetch_weather_overview(&state.lat, &state.lon, &state.api_key).await {
+    let (lat, lon) = weather_coordinates(&state, &query);
+    let bitmap = match fetch_weather_overview(lat, lon, &state.api_key).await {
         Ok(weather) => render_svg_bytes(
             generate_weather_overview_svg(&weather, query.battery_pct),
             "/tmp/weather_overview.svg",
@@ -176,7 +188,8 @@ async fn get_weather_overview_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    match fetch_weather_overview(&state.lat, &state.lon, &state.api_key).await {
+    let (lat, lon) = weather_coordinates(&state, &query);
+    match fetch_weather_overview(lat, lon, &state.api_key).await {
         Ok(weather) => {
             let svg_content = generate_weather_overview_svg(&weather, query.battery_pct);
             ([("Content-Type", "image/svg+xml")], svg_content)
@@ -345,5 +358,55 @@ async fn main() {
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("Server error: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{weather_coordinates, AppState, QueryArgs};
+
+    fn test_state() -> AppState {
+        AppState {
+            lat: "37.7749".to_string(),
+            lon: "-122.4194".to_string(),
+            api_key: "weather-key".to_string(),
+            stocks_api_key: "stocks-key".to_string(),
+            stock_symbols: "QQQ".to_string(),
+            fred_api_key: "fred-key".to_string(),
+            weight_data_dir: "/tmp".to_string(),
+        }
+    }
+
+    #[test]
+    fn weather_coordinates_default_to_state() {
+        let state = test_state();
+        let query = QueryArgs {
+            battery_pct: None,
+            date: None,
+            duration: None,
+            user: None,
+            lat: None,
+            lon: None,
+        };
+
+        assert_eq!(
+            weather_coordinates(&state, &query),
+            ("37.7749", "-122.4194")
+        );
+    }
+
+    #[test]
+    fn weather_coordinates_use_query_overrides() {
+        let state = test_state();
+        let query = QueryArgs {
+            battery_pct: None,
+            date: None,
+            duration: None,
+            user: None,
+            lat: Some("40.7128".to_string()),
+            lon: Some("-74.0060".to_string()),
+        };
+
+        assert_eq!(weather_coordinates(&state, &query), ("40.7128", "-74.0060"));
     }
 }
