@@ -321,7 +321,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(120, "blue"), (90, "green"), (60, "orange"), (30, "red")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(180, "blue"), (90, "green")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
