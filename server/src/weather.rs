@@ -53,6 +53,10 @@ pub struct DailyWeather {
     pub sunrise: i64,
     pub sunset: i64,
     pub weather: Vec<Weather>,
+    #[serde(default)]
+    pub pop: f32,
+    #[serde(default)]
+    pub rain: f32,
     pub uvi: Option<f32>,
     pub clouds: Option<i32>,
 }
@@ -99,6 +103,27 @@ fn map_weather_icon(icon_code: &str) -> &'static str {
         "13n" => "snow.svg",
         "50d" | "50n" => "fog.svg",
         _ => "cloudy.svg", // default fallback
+    }
+}
+
+const RAIN_ICON_POP_CUTOFF: f32 = 0.25; // 25% chance of rain
+const RAIN_ICON_AMOUNT_CUTOFF: f32 = 2.54; // 0.1 inch in mm
+
+fn display_icon_for_daily_weather(icon_code: &str, pop: f32, rain: f32) -> &str {
+    println!(
+        "Determining icon for code {}, pop {}, rain {}",
+        icon_code, pop, rain
+    );
+    if pop < RAIN_ICON_POP_CUTOFF || rain < RAIN_ICON_AMOUNT_CUTOFF {
+        match icon_code {
+            "09d" => "03d",
+            "09n" => "03n",
+            "10d" => "04d",
+            "10n" => "04n",
+            _ => icon_code,
+        }
+    } else {
+        icon_code
     }
 }
 
@@ -502,7 +527,8 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     // Weather icon (large, centered in left section)
     if let Some(w) = today.weather.first() {
         // Embed weather icon as a data URI
-        if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
+        let icon_code = display_icon_for_daily_weather(&w.icon, today.pop, today.rain);
+        if let Ok(data_uri) = load_weather_icon_as_data_uri(icon_code) {
             svg.push_str(&format!(
                 r#"  <image x="350" y="2" width="80" height="80" href="{}"/>"#,
                 data_uri
@@ -963,7 +989,8 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
         // Weather icon (small)
         if let Some(w) = day.weather.first() {
             // Embed small weather icon as a data URI
-            if let Ok(data_uri) = load_weather_icon_as_data_uri(&w.icon) {
+            let icon_code = display_icon_for_daily_weather(&w.icon, day.pop, day.rain);
+            if let Ok(data_uri) = load_weather_icon_as_data_uri(icon_code) {
                 svg.push_str(&format!(
                     r#"  <image x="{}" y="{}" width="80" height="80" href="{}"/>"#,
                     right_x + 150.0,
@@ -1111,4 +1138,20 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
 
     svg.push_str("</svg>");
     svg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_icon_for_daily_weather;
+
+    #[test]
+    fn low_pop_or_low_rain_rain_icons_are_replaced_with_clouds() {
+        assert_eq!(display_icon_for_daily_weather("09d", 0.24, 1.0), "03d");
+        assert_eq!(display_icon_for_daily_weather("09n", 0.24, 1.0), "03n");
+        assert_eq!(display_icon_for_daily_weather("10d", 0.24, 1.0), "04d");
+        assert_eq!(display_icon_for_daily_weather("10n", 0.24, 1.0), "04n");
+        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 0.99), "04d");
+        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 1.0), "10d");
+        assert_eq!(display_icon_for_daily_weather("01d", 0.10, 0.0), "01d");
+    }
 }
