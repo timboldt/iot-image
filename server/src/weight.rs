@@ -232,20 +232,22 @@ pub fn calculate_decay_projection(
 ) -> (Vec<ProjectionPoint>, Option<ProjectionPoint>, Option<f64>) {
     let mut projection = Vec::new();
 
-    // Extract v₀ and W₀ from latest state
-    let v0 = last_state.velocity_lbs_per_day;
+    // W₀ is always the current weight.
     let w0 = last_state.weight_lbs;
 
-    // Calculate acceleration (a) from linear regression on velocity over last N days
+    // v₀ is the average weight-loss rate over the lookback window, computed as a
+    // linear regression slope of Kalman weight estimates over that period. This
+    // makes each line semantically distinct: the 30-day line reflects the recent
+    // pace, the 90-day line the medium-term trend, and the 180-day line the
+    // longer-term trend. They diverge whenever short- and long-term rates differ.
     let lookback_date = last_state.timestamp - Duration::days(lookback_days);
     let recent_states: Vec<_> = kalman_states
         .iter()
         .filter(|s| s.timestamp >= lookback_date)
         .collect();
 
-    let acceleration = if recent_states.len() >= 2 {
-        // Linear regression: v(t) = v₀ + a*t
-        // Using actual time offsets for more accuracy than record index
+    let v0 = if recent_states.len() >= 2 {
+        // Linear regression of weight on time: w(t) = w₀ + v₀·t
         let n = recent_states.len() as f64;
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
@@ -254,7 +256,7 @@ pub fn calculate_decay_projection(
 
         for state in &recent_states {
             let x = (state.timestamp - last_state.timestamp).num_seconds() as f64 / 86400.0;
-            let y = state.velocity_lbs_per_day;
+            let y = state.weight_lbs;
 
             sum_x += x;
             sum_y += y;
@@ -266,24 +268,18 @@ pub fn calculate_decay_projection(
         if denominator.abs() > 1e-9 {
             (n * sum_xy - sum_x * sum_y) / denominator
         } else {
-            0.0
+            last_state.velocity_lbs_per_day
         }
     } else {
-        0.0
+        last_state.velocity_lbs_per_day
     };
 
     // Biological model: tendency to slow down as you approach a "set point" or goal.
     // This is modeled as velocity decaying exponentially: v(t) = v0 * exp(-kt)
-    // The braking constant k = -a/v0.
-    // We assume a minimum biological resistance (k_min = 0.002) even if the
-    // current data is linear or accelerating, as biological systems always
-    // eventually resist further change.
-    let k_min = 0.002;
-    let k = if v0.abs() > 1e-6 {
-        (-acceleration / v0).max(k_min)
-    } else {
-        k_min
-    };
+    // We assume a minimum biological resistance (k_min = 0.01, ~100-day time constant)
+    // as biological systems always eventually resist further change.
+    let k_min = 0.01;
+    let k = k_min;
 
     // Calculate the ultimate weight limit (asymptotic weight)
     // As t -> ∞, W(t) -> W0 + v0/k
@@ -321,7 +317,7 @@ pub fn calculate_decay_projection(
 // ============================================================================
 
 // Configuration for decay projections: (lookback_days, color)
-const DECAY_CONFIGS: &[(i64, &str)] = &[(180, "blue"), (90, "green")];
+const DECAY_CONFIGS: &[(i64, &str)] = &[(180, "blue"), (90, "green"), (30, "red")];
 
 pub async fn fetch_weight_data(csv_path: &Path) -> Result<WeightData, Box<dyn Error>> {
     // Read CSV
