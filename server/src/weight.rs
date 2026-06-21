@@ -274,12 +274,46 @@ pub fn calculate_decay_projection(
         last_state.velocity_lbs_per_day
     };
 
+    // a is the observed rate of change of velocity over the lookback window,
+    // used to derive how quickly the current pace is decelerating.
+    let a = if recent_states.len() >= 2 {
+        let n = recent_states.len() as f64;
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut sum_xy = 0.0;
+        let mut sum_x2 = 0.0;
+
+        for state in &recent_states {
+            let x = (state.timestamp - last_state.timestamp).num_seconds() as f64 / 86400.0;
+            let y = state.velocity_lbs_per_day;
+
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_x2 += x * x;
+        }
+
+        let denominator = n * sum_x2 - sum_x * sum_x;
+        if denominator.abs() > 1e-9 {
+            (n * sum_xy - sum_x * sum_y) / denominator
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     // Biological model: tendency to slow down as you approach a "set point" or goal.
     // This is modeled as velocity decaying exponentially: v(t) = v0 * exp(-kt)
-    // We assume a minimum biological resistance (k_min = 0.01, ~100-day time constant)
-    // as biological systems always eventually resist further change.
+    // k is derived from the observed velocity slope: k = -(a / v0)
+    // k_min = 0.01 (~100-day time constant) is the floor: even with no observed
+    // deceleration, biology ensures weight loss eventually tapers off.
     let k_min = 0.01;
-    let k = k_min;
+    let k = if v0.abs() > 1e-9 {
+        (-(a / v0)).max(k_min)
+    } else {
+        k_min
+    };
 
     // Calculate the ultimate weight limit (asymptotic weight)
     // As t -> ∞, W(t) -> W0 + v0/k
@@ -1231,7 +1265,8 @@ mod tests {
             velocity_variance: 1.0,
         };
 
-        // Create states showing velocity slowing down
+        // Create states showing velocity slowing down, with weights consistent
+        // with a -1.0 lb/day trend so weight regression gives v0 = -1.0.
         // v(t) = v0 + a*t
         let mut kalman_states = Vec::new();
         for i in 0..11 {
@@ -1241,7 +1276,7 @@ mod tests {
             let v = -1.0 + (i as f64 - 10.0) * 0.1;
             kalman_states.push(KalmanState {
                 timestamp: t,
-                weight_lbs: 200.0,
+                weight_lbs: 200.0 + days_ago as f64, // linear -1.0 lb/day trend
                 velocity_lbs_per_day: v,
                 weight_variance: 1.0,
                 weight_velocity_covariance: 0.0,
@@ -1276,7 +1311,8 @@ mod tests {
             velocity_variance: 1.0,
         };
 
-        // Speeding up (accelerating): v goes from -0.5 to -1.0 => acceleration = -0.05
+        // Speeding up (accelerating): v goes from -0.5 to -1.0 => acceleration = -0.05.
+        // Weights consistent with a -1.0 lb/day trend so weight regression gives v0 = -1.0.
         let mut kalman_states = Vec::new();
         for i in 0..11 {
             let days_ago = 10 - i;
@@ -1284,7 +1320,7 @@ mod tests {
             let v = -1.0 - (i as f64 - 10.0) * 0.05;
             kalman_states.push(KalmanState {
                 timestamp: t,
-                weight_lbs: 200.0,
+                weight_lbs: 200.0 + days_ago as f64, // linear -1.0 lb/day trend
                 velocity_lbs_per_day: v,
                 weight_variance: 1.0,
                 weight_velocity_covariance: 0.0,
@@ -1299,13 +1335,13 @@ mod tests {
         assert!(stall_weight.is_some());
 
         // Since we are accelerating, measured k = -(-0.05)/(-1.0) = -0.05.
-        // The floor k_min = 0.002 should be used.
-        // Stall weight = 200 + (-1.0 / 0.002) = 200 - 500 = -300.0
-        assert!((stall_weight.unwrap() - (-300.0)).abs() < 1e-6);
+        // The floor k_min = 0.01 should be used.
+        // Stall weight = 200 + (-1.0 / 0.01) = 200 - 100 = 100.0
+        assert!((stall_weight.unwrap() - 100.0).abs() < 1e-6);
 
         let last_point = projection.last().unwrap();
-        // W(90) = 200 - (1/0.002)*(1 - exp(-0.002 * 90))
-        // 200 - 500*(1 - exp(-0.18)) = 200 - 500*(1 - 0.83527) = 200 - 82.36 = 117.63
-        assert!((last_point.weight_lbs - 117.63).abs() < 1.0);
+        // W(90) = 200 - (1/0.01)*(1 - exp(-0.01 * 90))
+        // 200 - 100*(1 - exp(-0.9)) = 200 - 100*(1 - 0.40657) = 200 - 59.34 = 140.66
+        assert!((last_point.weight_lbs - 140.66).abs() < 1.0);
     }
 }

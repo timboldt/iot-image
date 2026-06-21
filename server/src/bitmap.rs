@@ -3,9 +3,6 @@
 //! Generates raw bitmaps in the native format for GxEPD2 7-color displays
 //! Format: EPBM header + raw pixel data (1 byte per pixel)
 
-use std::fs;
-use std::path::Path;
-
 /// Approximate RGB values for E Ink Spectra 6 pigments
 const PALETTE: [[u8; 3]; 6] = [
     [0, 0, 0],       // Black
@@ -331,11 +328,8 @@ fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
         .unwrap_or(EpdColor::White)
 }
 
-/// Render SVG file to e-ink bitmap using Atkinson error diffusion dithering
-pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<EpdBitmap, String> {
-    // Read SVG file
-    let svg_data = fs::read(svg_path).map_err(|e| format!("Failed to read SVG file: {}", e))?;
-
+/// Render SVG bytes to e-ink bitmap using Atkinson error diffusion dithering
+pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<EpdBitmap, String> {
     // Parse SVG with font configuration
     let mut opts = usvg::Options::default();
 
@@ -349,7 +343,7 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
 
     println!("Loaded {} fonts from system", opts.fontdb_mut().len());
 
-    let tree = usvg::Tree::from_data(&svg_data, &opts)
+    let tree = usvg::Tree::from_data(svg_data, &opts)
         .map_err(|e| format!("Failed to parse SVG: {}", e))?;
 
     // Create pixmap for rendering with white background
@@ -370,7 +364,8 @@ pub fn render_svg_to_bitmap(svg_path: &Path, width: u16, height: u16) -> Result<
     // Render SVG to pixmap
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // Save debug PNG to see what was rendered
+    // Save debug PNG to see what was rendered (debug builds only)
+    #[cfg(debug_assertions)]
     if let Err(e) = pixmap.save_png("debug_render.png") {
         eprintln!("Warning: Could not save debug PNG: {}", e);
     }

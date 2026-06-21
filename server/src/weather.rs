@@ -520,7 +520,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     let search_result = geocoder.search(coords);
     svg.push_str(&format!(
         r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="black">{}</text>"#,
-        search_result.record.name
+        escape_xml_text(&search_result.record.name)
     ));
     svg.push('\n');
 
@@ -929,7 +929,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
             // Event name in bold red
             svg.push_str(&format!(
                 r#"  <text x="40" y="{}" font-family="Arial" font-size="16" font-weight="bold" fill="red">{}</text>"#,
-                alert_y, alert.event
+                alert_y, escape_xml_text(&alert.event)
             ));
             svg.push('\n');
 
@@ -1150,8 +1150,10 @@ mod tests {
         assert_eq!(display_icon_for_daily_weather("09n", 0.24, 1.0), "03n");
         assert_eq!(display_icon_for_daily_weather("10d", 0.24, 1.0), "04d");
         assert_eq!(display_icon_for_daily_weather("10n", 0.24, 1.0), "04n");
-        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 0.99), "04d");
-        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 1.0), "10d");
+        // pop >= cutoff, rain below 2.54mm cutoff → replace with clouds
+        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 2.53), "04d");
+        // pop >= cutoff, rain at/above 2.54mm cutoff → keep rain icon
+        assert_eq!(display_icon_for_daily_weather("10d", 0.25, 2.54), "10d");
         assert_eq!(display_icon_for_daily_weather("01d", 0.10, 0.0), "01d");
     }
 }

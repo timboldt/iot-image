@@ -76,24 +76,15 @@ struct QueryArgs {
 const DISPLAY_WIDTH: u16 = 800;
 const DISPLAY_HEIGHT: u16 = 480;
 
-fn render_svg_bytes(svg_content: String, temp_svg_path: &str) -> Vec<u8> {
-    let bitmap = match std::fs::write(temp_svg_path, &svg_content) {
-        Ok(_) => match bitmap::render_svg_to_bitmap(
-            Path::new(temp_svg_path),
-            DISPLAY_WIDTH,
-            DISPLAY_HEIGHT,
-        ) {
+fn render_svg_bytes(svg_content: String) -> Vec<u8> {
+    let bitmap =
+        match bitmap::render_svg_to_bitmap(svg_content.as_bytes(), DISPLAY_WIDTH, DISPLAY_HEIGHT) {
             Ok(bmp) => bmp,
             Err(e) => {
                 eprintln!("Error rendering SVG: {}", e);
                 bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT)
             }
-        },
-        Err(e) => {
-            eprintln!("Error writing SVG file: {}", e);
-            bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT)
-        }
-    };
+        };
 
     bitmap.to_bytes()
 }
@@ -112,8 +103,13 @@ fn error_svg(e: impl Display) -> String {
     )
 }
 
-fn weight_csv_path(state: &AppState, user: Option<&str>) -> String {
-    format!("{}/{}.csv", state.weight_data_dir, user.unwrap_or("weight"))
+fn weight_csv_path(state: &AppState, user: Option<&str>) -> Result<String, String> {
+    let user = user.unwrap_or("weight");
+    // Reject any path separators or traversal sequences to prevent directory traversal.
+    if user.contains('/') || user.contains('\\') || user.contains("..") {
+        return Err(format!("Invalid user parameter: {}", user));
+    }
+    Ok(format!("{}/{}.csv", state.weight_data_dir, user))
 }
 
 fn weather_coordinates<'a>(state: &'a AppState, query: &'a QueryArgs) -> (&'a str, &'a str) {
@@ -129,10 +125,7 @@ async fn get_weather_bitmap(
 ) -> impl IntoResponse {
     let (lat, lon) = weather_coordinates(&state, &query);
     let bitmap = match fetch_weather(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(
-            generate_weather_svg(&weather, query.battery_pct),
-            "/tmp/weather.svg",
-        ),
+        Ok(weather) => render_svg_bytes(generate_weather_svg(&weather, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching weather", e),
     };
 
@@ -144,10 +137,7 @@ async fn get_stocks_bitmap(
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
     let bitmap = match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
-        Ok(stocks) => render_svg_bytes(
-            generate_stocks_svg(&stocks, query.battery_pct),
-            "/tmp/stocks.svg",
-        ),
+        Ok(stocks) => render_svg_bytes(generate_stocks_svg(&stocks, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching stocks", e),
     };
 
@@ -174,10 +164,7 @@ async fn get_weather_overview_bitmap(
 ) -> impl IntoResponse {
     let (lat, lon) = weather_coordinates(&state, &query);
     let bitmap = match fetch_weather_overview(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(
-            generate_weather_overview_svg(&weather, query.battery_pct),
-            "/tmp/weather_overview.svg",
-        ),
+        Ok(weather) => render_svg_bytes(generate_weather_overview_svg(&weather, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching weather overview", e),
     };
 
@@ -217,7 +204,7 @@ async fn get_fred_bitmap(
 ) -> impl IntoResponse {
     let bitmap = match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await
     {
-        Ok(fred) => render_svg_bytes(generate_fred_svg(&fred, query.battery_pct), "/tmp/fred.svg"),
+        Ok(fred) => render_svg_bytes(generate_fred_svg(&fred, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching FRED data", e),
     };
 
@@ -241,12 +228,17 @@ async fn get_weight_forecast_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = weight_csv_path(&state, query.user.as_deref());
+    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                [("Content-Type", "application/octet-stream")],
+                fallback_bitmap_bytes("invalid user parameter", e),
+            )
+        }
+    };
     let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => render_svg_bytes(
-            generate_forecast_svg(&data, query.battery_pct),
-            "/tmp/weight_forecast.svg",
-        ),
+        Ok(data) => render_svg_bytes(generate_forecast_svg(&data, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching weight data", e),
     };
 
@@ -257,7 +249,10 @@ async fn get_weight_forecast_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = weight_csv_path(&state, query.user.as_deref());
+    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return ([("Content-Type", "image/svg+xml")], error_svg(e)),
+    };
     match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_forecast_svg(&data, query.battery_pct);
@@ -271,12 +266,17 @@ async fn get_weight_velocity_bitmap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = weight_csv_path(&state, query.user.as_deref());
+    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                [("Content-Type", "application/octet-stream")],
+                fallback_bitmap_bytes("invalid user parameter", e),
+            )
+        }
+    };
     let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => render_svg_bytes(
-            generate_velocity_svg(&data, query.battery_pct),
-            "/tmp/weight_velocity.svg",
-        ),
+        Ok(data) => render_svg_bytes(generate_velocity_svg(&data, query.battery_pct)),
         Err(e) => fallback_bitmap_bytes("fetching weight data", e),
     };
 
@@ -287,7 +287,10 @@ async fn get_weight_velocity_svg(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueryArgs>,
 ) -> impl IntoResponse {
-    let csv_path = weight_csv_path(&state, query.user.as_deref());
+    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return ([("Content-Type", "image/svg+xml")], error_svg(e)),
+    };
     match fetch_weight_data(Path::new(&csv_path)).await {
         Ok(data) => {
             let svg_content = generate_velocity_svg(&data, query.battery_pct);
