@@ -34,12 +34,35 @@ pub struct FredData {
     pub sp500: SeriesData,
     pub credit_spread: SeriesData,
     pub yield_curve: SeriesData,
+    pub yield_curve_steepening: SteepeningType,
+    /// Current raw T10Y3M spread level (percentage points, from FRED)
+    pub yield_curve_level: f64,
+    /// Scaled velocity change per day over the last 7 days (units: VELOCITY_SCALE / day)
+    pub yield_curve_acceleration: f64,
     pub end_date: String,
     pub duration: usize,
 }
 
 const YIELD_CURVE_WARMUP_DAYS: usize = 60;
 const YIELD_CURVE_VELOCITY_SCALE: f64 = 1_000.0;
+// Scaled velocity threshold for steepening classification (~0.3 bp/day)
+const YIELD_CURVE_VEL_THRESHOLD: f64 = 3.0;
+
+/// Classifies the type of yield curve steepening based on which leg is driving it.
+/// This is critical for distinguishing crisis signals from benign expansion.
+#[derive(Debug, PartialEq)]
+pub enum SteepeningType {
+    /// 3M rate falling → short-end front-running Fed cuts; systemic risk signal
+    BullSteepening,
+    /// 10Y rate rising while 3M is flat/rising → expanding term premium; benign
+    BearSteepening,
+    /// Spread narrowing (moving toward inversion) when already positive, or deepening when negative
+    Flattening,
+    /// Spread is negative AND deepening (inversion worsening)
+    Inverting,
+    /// Low velocity; no strong signal
+    Stable,
+}
 
 struct KalmanFilter {
     // State vector: [position, velocity]
@@ -57,8 +80,12 @@ impl KalmanFilter {
         Self {
             x: [initial_position, 0.0],
             p: [[1.0, 0.0], [0.0, 1.0]],
-            q: [[0.005, 0.0], [0.0, 0.0005]],
-            r: 1.5,
+            // Position process noise ~0.07 pp/day; velocity process noise tightened to
+            // reduce spurious jumps while staying responsive to real trend changes.
+            q: [[0.005, 0.0], [0.0, 0.00005]],
+            // Measurement noise: FRED yields are in percentage points (e.g. 0.35).
+            // Daily noise std ~0.05 pp → R ≈ 0.0025.  Use 0.01 for slight smoothing.
+            r: 0.01,
         }
     }
 
@@ -136,6 +163,19 @@ fn compute_velocity_series(points: &[DataPoint]) -> Vec<DataPoint> {
     }
 
     velocity_points
+}
+
+/// Estimates acceleration as the average rate of velocity change over the last
+/// `window_days` observations.  Returns scaled units (VELOCITY_SCALE / day).
+fn compute_acceleration(velocity_points: &[DataPoint], window_days: usize) -> f64 {
+    let n = velocity_points.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let window = window_days.min(n - 1);
+    let recent = velocity_points[n - 1].value;
+    let past = velocity_points[n - 1 - window].value;
+    (recent - past) / window as f64
 }
 
 async fn fetch_series(
@@ -226,7 +266,26 @@ pub async fn fetch_fred(
         duration + YIELD_CURVE_WARMUP_DAYS,
     )
     .await?;
+    // Fetch individual legs to distinguish bull vs. bear steepening.
+    let dgs10 = fetch_series(
+        api_key,
+        "DGS10",
+        end_date,
+        duration + YIELD_CURVE_WARMUP_DAYS,
+    )
+    .await?;
+    let dtb3 = fetch_series(
+        api_key,
+        "DTB3",
+        end_date,
+        duration + YIELD_CURVE_WARMUP_DAYS,
+    )
+    .await?;
+
     let yield_curve_velocity = compute_velocity_series(&yield_curve);
+    let dgs10_velocity = compute_velocity_series(&dgs10);
+    let dtb3_velocity = compute_velocity_series(&dtb3);
+
     let mut yield_curve_velocity_windowed: Vec<DataPoint> = yield_curve_velocity
         .into_iter()
         .filter(|point| {
@@ -238,6 +297,72 @@ pub async fn fetch_fred(
     if yield_curve_velocity_windowed.is_empty() {
         yield_curve_velocity_windowed = compute_velocity_series(&yield_curve);
     }
+
+    // Window individual-leg velocities to the chart period.
+    let dgs10_vel_windowed: Vec<DataPoint> = dgs10_velocity
+        .into_iter()
+        .filter(|p| {
+            NaiveDate::parse_from_str(&p.date, "%Y-%m-%d")
+                .map(|d| d >= chart_start_date)
+                .unwrap_or(true)
+        })
+        .collect();
+    let dtb3_vel_windowed: Vec<DataPoint> = dtb3_velocity
+        .into_iter()
+        .filter(|p| {
+            NaiveDate::parse_from_str(&p.date, "%Y-%m-%d")
+                .map(|d| d >= chart_start_date)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    // Classify steepening type from the latest velocities of each leg.
+    // Spread velocity > 0 can mean two very different macro environments:
+    //   Bull steepening: 3M falling fast (market pricing emergency Fed cuts) → crisis signal
+    //   Bear steepening: 10Y rising (expanding term premium, growth optimism) → benign
+    let spread_vel = yield_curve_velocity_windowed
+        .last()
+        .map(|p| p.value)
+        .unwrap_or(0.0);
+    let dgs10_vel = dgs10_vel_windowed
+        .last()
+        .map(|p| p.value)
+        .unwrap_or(0.0);
+    let dtb3_vel = dtb3_vel_windowed
+        .last()
+        .map(|p| p.value)
+        .unwrap_or(0.0);
+
+    let steepening = if spread_vel.abs() < YIELD_CURVE_VEL_THRESHOLD {
+        SteepeningType::Stable
+    } else if spread_vel > YIELD_CURVE_VEL_THRESHOLD {
+        // 3M falling faster than 10Y rising → bull steepening (crisis)
+        if dtb3_vel < -YIELD_CURVE_VEL_THRESHOLD
+            && (-dtb3_vel) > dgs10_vel.max(0.0)
+        {
+            SteepeningType::BullSteepening
+        } else {
+            SteepeningType::BearSteepening
+        }
+    } else {
+        // Negative velocity (spread shrinking). Distinguish by the current spread LEVEL:
+        // - Spread still positive: "Flattening" (bearish trend but not yet inverted)
+        // - Spread negative or near zero: "Inverting" (deepening inversion)
+        let current_spread = yield_curve
+            .last()
+            .map(|p| p.value)
+            .unwrap_or(0.0);
+        if current_spread > 0.1 {
+            SteepeningType::Flattening
+        } else {
+            SteepeningType::Inverting
+        }
+    };
+    // Warn unused; stored for potential future use in chart annotations.
+    let _ = dgs10_vel;
+
+    let acceleration = compute_acceleration(&yield_curve_velocity_windowed, 7);
+    let current_spread_level = yield_curve.last().map(|p| p.value).unwrap_or(0.0);
 
     Ok(FredData {
         vix: SeriesData {
@@ -260,6 +385,9 @@ pub async fn fetch_fred(
             name: "Yield Curve Velocity (10Y-3M)".to_string(),
             points: yield_curve_velocity_windowed,
         },
+        yield_curve_steepening: steepening,
+        yield_curve_level: current_spread_level,
+        yield_curve_acceleration: acceleration,
         end_date: display_end_date,
         duration,
     })
@@ -353,6 +481,9 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     ));
     svg.push_str(&generate_yield_curve_chart(
         &fred.yield_curve,
+        &fred.yield_curve_steepening,
+        fred.yield_curve_level,
+        fred.yield_curve_acceleration,
         positions[3].0,
         positions[3].1,
         chart_width,
@@ -853,6 +984,9 @@ fn generate_credit_spread_chart(
 
 fn generate_yield_curve_chart(
     series: &SeriesData,
+    steepening: &SteepeningType,
+    spread_level: f64,
+    acceleration: f64,
     x: i32,
     y: i32,
     width: i32,
@@ -883,13 +1017,52 @@ fn generate_yield_curve_chart(
         ));
     }
 
+    // Steepening signal label (left) and acceleration (right) on the sub-header row
+    let (signal_text, signal_color) = match steepening {
+        SteepeningType::BullSteepening => ("BULL STEEP \u{26a0} Crisis Signal", "red"),
+        SteepeningType::BearSteepening => ("Bear Steep \u{2014} Expansion", "#cc8800"),
+        SteepeningType::Flattening => ("Flattening \u{2014} Caution", "#cc8800"),
+        SteepeningType::Inverting => ("Inverting \u{26a0} Warning", "red"),
+        SteepeningType::Stable => ("Stable", "#666666"),
+    };
+    let spread_label = format!("Spread: {:+.2}%", spread_level);
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="start" font-size="11" font-weight="bold" fill="{}">{}</text>"#,
+        x + 5,
+        y + 32,
+        signal_color,
+        signal_text
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="11" fill="black">{}  Accel: {:+.1}</text>"#,
+        x + width - 5,
+        y + 32,
+        spread_label,
+        acceleration
+    ));
+
     if series.points.is_empty() {
         return svg;
     }
 
-    // Velocity semantics: negative is good (green), positive is bad (red)
+    // Velocity semantics: negative → steepening unwinding (green), positive → see steepening type
     let neutral_threshold = 0.0;
     let good_threshold = -0.02 * YIELD_CURVE_VELOCITY_SCALE;
+
+    // Color for the positive-velocity zone depends on steepening type:
+    // bull steepening (3M falling) is a crisis signal → red
+    // bear steepening (10Y rising) is benign expansion → amber
+    // negative-velocity zones use a fixed dark amber for flattening, red for inverting
+    let positive_color = match steepening {
+        SteepeningType::BullSteepening => "red",
+        SteepeningType::BearSteepening => "#cc8800",
+        _ => "orange",
+    };
+    let negative_color = match steepening {
+        SteepeningType::Inverting => "red",
+        SteepeningType::Flattening => "#cc8800",
+        _ => "green",
+    };
 
     // Calculate data range
     let data_min = series
@@ -917,41 +1090,58 @@ fn generate_yield_curve_chart(
     // Create gradient ID unique to this chart
     let gradient_id = format!("yieldCurveGradient_{}_{}", x, y);
 
-    // With invert_y=true, top = min_val (negative), bottom = max_val (positive)
-    // Gradient is Top (0%, Green) to Bottom (100%, Red)
+    // Standard Cartesian orientation: y1="100%" (bottom/min_val/green) to y2="0%" (top/positive_color)
     svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="0%" x2="0%" y2="100%">"#,
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
         gradient_id
     ));
 
     if max_val <= good_threshold {
-        // All good (negative velocity) - just green
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
+        // All good (negative velocity) - use negative_color (green for stable, amber for flattening, red for inverting)
+        svg.push_str(&format!(
+            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
+            negative_color
+        ));
+        svg.push_str(&format!(
+            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
+            negative_color
+        ));
     } else if min_val >= neutral_threshold {
-        // All bad (positive velocity) - just red
-        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        // All positive velocity - single color based on steepening type
+        svg.push_str(&format!(
+            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
+            positive_color
+        ));
+        svg.push_str(&format!(
+            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
+            positive_color
+        ));
     } else {
-        // Mixed range
+        // Mixed range: bottom=min_val/negative_color, top=positive_color
         let good_pct = ((good_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
         let zero_pct = ((neutral_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
 
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
         svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-            good_pct
+            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
+            negative_color
+        ));
+        svg.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:{};stop-opacity:1" />"#,
+            good_pct, negative_color
         ));
         svg.push_str(&format!(
             r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
             zero_pct
         ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
+        svg.push_str(&format!(
+            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
+            positive_color
+        ));
     }
 
     svg.push_str(r#"</linearGradient></defs>"#);
 
-    // Draw area chart with gradient (inverted Y axis)
+    // Standard Y orientation: positive values up, negative values down
     generate_area_chart_internal(
         &mut svg,
         series,
@@ -961,18 +1151,22 @@ fn generate_yield_curve_chart(
         height,
         &format!("url(#{})", gradient_id),
         None,
-        true, // invert_y
+        false, // invert_y: false fixes area fill baseline and aligns with gradient direction
     );
 
-    // Draw threshold lines (inverted Y axis)
+    // Draw threshold lines (standard Cartesian: higher values = smaller y pixel coordinate)
     let chart_x = x + 40;
     let chart_y = y + 35;
     let chart_h = height - 55;
     let chart_w = width - 50;
 
-    for (threshold, color) in [(neutral_threshold, "red"), (good_threshold, "green")] {
+    for (threshold, color) in [
+        (neutral_threshold, positive_color),
+        (good_threshold, negative_color),
+    ] {
         if threshold >= min_val && threshold <= max_val {
-            let line_y = chart_y + ((threshold - min_val) / range * chart_h as f64) as i32;
+            let line_y =
+                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
             svg.push_str(&format!(
                 r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
                 chart_x, line_y, chart_x + chart_w, line_y, color
