@@ -21,7 +21,7 @@ pub struct SeriesData {
     pub points: Vec<DataPoint>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataPoint {
     #[allow(dead_code)]
     pub date: String,
@@ -34,6 +34,8 @@ pub struct FredData {
     pub sp500: SeriesData,
     pub credit_spread: SeriesData,
     pub yield_curve: SeriesData,
+    /// Per-point signal classification, parallel to yield_curve.points
+    pub yield_curve_signals: Vec<SteepeningType>,
     pub yield_curve_steepening: SteepeningType,
     /// Current raw T10Y3M spread level (percentage points, from FRED)
     pub yield_curve_level: f64,
@@ -178,6 +180,31 @@ fn compute_acceleration(velocity_points: &[DataPoint], window_days: usize) -> f6
     (recent - past) / window as f64
 }
 
+fn build_date_map(points: &[DataPoint]) -> std::collections::HashMap<String, f64> {
+    points.iter().map(|p| (p.date.clone(), p.value)).collect()
+}
+
+fn classify_at_point(
+    spread_vel: f64,
+    dgs10_vel: f64,
+    dtb3_vel: f64,
+    spread_level: f64,
+) -> SteepeningType {
+    if spread_vel.abs() < YIELD_CURVE_VEL_THRESHOLD {
+        SteepeningType::Stable
+    } else if spread_vel > YIELD_CURVE_VEL_THRESHOLD {
+        if dtb3_vel < -YIELD_CURVE_VEL_THRESHOLD && (-dtb3_vel) > dgs10_vel.max(0.0) {
+            SteepeningType::BullSteepening
+        } else {
+            SteepeningType::BearSteepening
+        }
+    } else if spread_level > 0.1 {
+        SteepeningType::Flattening
+    } else {
+        SteepeningType::Inverting
+    }
+}
+
 async fn fetch_series(
     api_key: &str,
     series_id: &str,
@@ -286,6 +313,25 @@ pub async fn fetch_fred(
     let dgs10_velocity = compute_velocity_series(&dgs10);
     let dtb3_velocity = compute_velocity_series(&dtb3);
 
+    // Build date maps from full velocity series before windowing consumes them
+    let spread_vel_map = build_date_map(&yield_curve_velocity);
+    let dgs10_vel_map = build_date_map(&dgs10_velocity);
+    let dtb3_vel_map = build_date_map(&dtb3_velocity);
+
+    // Window raw spread to the chart period (for plotting)
+    let mut yield_curve_windowed: Vec<DataPoint> = yield_curve
+        .iter()
+        .filter(|point| {
+            NaiveDate::parse_from_str(&point.date, "%Y-%m-%d")
+                .map(|d| d >= chart_start_date)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    if yield_curve_windowed.is_empty() {
+        yield_curve_windowed = yield_curve.clone();
+    }
+
     let mut yield_curve_velocity_windowed: Vec<DataPoint> = yield_curve_velocity
         .into_iter()
         .filter(|point| {
@@ -364,6 +410,17 @@ pub async fn fetch_fred(
     let acceleration = compute_acceleration(&yield_curve_velocity_windowed, 7);
     let current_spread_level = yield_curve.last().map(|p| p.value).unwrap_or(0.0);
 
+    // Build per-point signal series aligned with the windowed spread for band rendering.
+    let yield_curve_signals: Vec<SteepeningType> = yield_curve_windowed
+        .iter()
+        .map(|p| {
+            let sv = spread_vel_map.get(&p.date).copied().unwrap_or(0.0);
+            let dv = dgs10_vel_map.get(&p.date).copied().unwrap_or(0.0);
+            let tv = dtb3_vel_map.get(&p.date).copied().unwrap_or(0.0);
+            classify_at_point(sv, dv, tv, p.value)
+        })
+        .collect();
+
     Ok(FredData {
         vix: SeriesData {
             symbol: "VIX".to_string(),
@@ -382,9 +439,10 @@ pub async fn fetch_fred(
         },
         yield_curve: SeriesData {
             symbol: "T10Y3M".to_string(),
-            name: "Yield Curve Velocity (10Y-3M)".to_string(),
-            points: yield_curve_velocity_windowed,
+            name: "Yield Curve (10Y-3M)".to_string(),
+            points: yield_curve_windowed,
         },
+        yield_curve_signals,
         yield_curve_steepening: steepening,
         yield_curve_level: current_spread_level,
         yield_curve_acceleration: acceleration,
@@ -481,6 +539,7 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     ));
     svg.push_str(&generate_yield_curve_chart(
         &fred.yield_curve,
+        &fred.yield_curve_signals,
         &fred.yield_curve_steepening,
         fred.yield_curve_level,
         fred.yield_curve_acceleration,
@@ -984,8 +1043,9 @@ fn generate_credit_spread_chart(
 
 fn generate_yield_curve_chart(
     series: &SeriesData,
+    signals: &[SteepeningType],
     steepening: &SteepeningType,
-    spread_level: f64,
+    _spread_level: f64,
     acceleration: f64,
     x: i32,
     y: i32,
@@ -1010,7 +1070,7 @@ fn generate_yield_curve_chart(
         ));
 
         svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="13" fill="black">{:+.3} /day ×10^3</text>"#,
+            r#"<text x="{}" y="{}" text-anchor="end" font-size="14" fill="black">{:+.2}%</text>"#,
             x + width - 5,
             y + 20,
             last.value
@@ -1025,7 +1085,7 @@ fn generate_yield_curve_chart(
         SteepeningType::Inverting => ("Inverting \u{26a0} Warning", "red"),
         SteepeningType::Stable => ("Stable", "#666666"),
     };
-    let spread_label = format!("Spread: {:+.2}%", spread_level);
+    let spread_label = format!("vel:{:+.1}  accel:{:+.1}", acceleration * 7.0, acceleration);
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" text-anchor="start" font-size="11" font-weight="bold" fill="{}">{}</text>"#,
         x + 5,
@@ -1034,43 +1094,28 @@ fn generate_yield_curve_chart(
         signal_text
     ));
     svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="11" fill="black">{}  Accel: {:+.1}</text>"#,
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="11" fill="black">{}</text>"#,
         x + width - 5,
         y + 32,
-        spread_label,
-        acceleration
+        spread_label
     ));
 
     if series.points.is_empty() {
         return svg;
     }
 
-    // Velocity semantics: negative → steepening unwinding (green), positive → see steepening type
-    let neutral_threshold = 0.0;
-    let good_threshold = -0.02 * YIELD_CURVE_VELOCITY_SCALE;
+    let chart_x = x + 40;
+    let chart_y = y + 35;
+    let chart_w = width - 50;
+    let chart_h = height - 55;
 
-    // Color for the positive-velocity zone depends on steepening type:
-    // bull steepening (3M falling) is a crisis signal → red
-    // bear steepening (10Y rising) is benign expansion → amber
-    // negative-velocity zones use a fixed dark amber for flattening, red for inverting
-    let positive_color = match steepening {
-        SteepeningType::BullSteepening => "red",
-        SteepeningType::BearSteepening => "#cc8800",
-        _ => "orange",
-    };
-    let negative_color = match steepening {
-        SteepeningType::Inverting => "red",
-        SteepeningType::Flattening => "#cc8800",
-        _ => "green",
-    };
-
-    // Calculate data range
+    // Calculate data range, always spanning zero so the inversion line is meaningful
     let data_min = series
         .points
         .iter()
         .map(|p| p.value)
         .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(-1.0);
+        .unwrap_or(-2.0);
     let data_max = series
         .points
         .iter()
@@ -1078,101 +1123,105 @@ fn generate_yield_curve_chart(
         .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(3.0);
 
-    // Ensure thresholds are visible
-    let min_val = data_min.min(good_threshold);
-    let max_val = data_max.max(neutral_threshold);
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
+    let min_val = data_min.min(-0.1);
+    let max_val = data_max.max(0.5);
+    let range = if max_val > min_val { max_val - min_val } else { 1.0 };
 
-    // Create gradient ID unique to this chart
-    let gradient_id = format!("yieldCurveGradient_{}_{}", x, y);
+    let num_points = series.points.len();
 
-    // Standard Cartesian orientation: y1="100%" (bottom/min_val/green) to y2="0%" (top/positive_color)
+    // Clip all drawing to the chart area
+    let clip_id = format!("ycClip_{}_{}", x, y);
     svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
-        gradient_id
+        r#"<defs><clipPath id="{}"><rect x="{}" y="{}" width="{}" height="{}"/></clipPath></defs>"#,
+        clip_id, chart_x, chart_y, chart_w, chart_h
     ));
 
-    if max_val <= good_threshold {
-        // All good (negative velocity) - use negative_color (green for stable, amber for flattening, red for inverting)
-        svg.push_str(&format!(
-            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
-            negative_color
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
-            negative_color
-        ));
-    } else if min_val >= neutral_threshold {
-        // All positive velocity - single color based on steepening type
-        svg.push_str(&format!(
-            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
-            positive_color
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
-            positive_color
-        ));
-    } else {
-        // Mixed range: bottom=min_val/negative_color, top=positive_color
-        let good_pct = ((good_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
-        let zero_pct = ((neutral_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
+    // ── Vertical signal bands ─────────────────────────────────────────────────
+    // Draw one band per data point; merge consecutive identical signals for efficiency.
+    let signal_color = |s: &SteepeningType| match s {
+        SteepeningType::BullSteepening => "#ff8888",
+        SteepeningType::Inverting     => "#ffbbaa",
+        SteepeningType::Flattening    => "#ffe8aa",
+        SteepeningType::BearSteepening => "#ffffaa",
+        SteepeningType::Stable        => "#ccffcc",
+    };
 
-        svg.push_str(&format!(
-            r#"<stop offset="0%" style="stop-color:{};stop-opacity:1" />"#,
-            negative_color
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:{};stop-opacity:1" />"#,
-            good_pct, negative_color
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-            zero_pct
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="100%" style="stop-color:{};stop-opacity:1" />"#,
-            positive_color
-        ));
-    }
+    if num_points > 1 {
+        let mut band_start = 0usize;
+        let mut band_sig = signals.get(0).unwrap_or(&SteepeningType::Stable);
 
-    svg.push_str(r#"</linearGradient></defs>"#);
+        let px = |i: usize| -> i32 {
+            chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32
+        };
 
-    // Standard Y orientation: positive values up, negative values down
-    generate_area_chart_internal(
-        &mut svg,
-        series,
-        x,
-        y,
-        width,
-        height,
-        &format!("url(#{})", gradient_id),
-        None,
-        false, // invert_y: false fixes area fill baseline and aligns with gradient direction
-    );
+        for i in 1..=num_points {
+            let cur_sig = if i < num_points {
+                signals.get(i).unwrap_or(&SteepeningType::Stable)
+            } else {
+                // sentinel: force flush
+                &SteepeningType::BullSteepening
+            };
 
-    // Draw threshold lines (standard Cartesian: higher values = smaller y pixel coordinate)
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_h = height - 55;
-    let chart_w = width - 50;
-
-    for (threshold, color) in [
-        (neutral_threshold, positive_color),
-        (good_threshold, negative_color),
-    ] {
-        if threshold >= min_val && threshold <= max_val {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
-            svg.push_str(&format!(
-                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
-                chart_x, line_y, chart_x + chart_w, line_y, color
-            ));
+            let flush = i == num_points || std::mem::discriminant(cur_sig) != std::mem::discriminant(band_sig);
+            if flush {
+                let bx = px(band_start);
+                let bx2 = px(if i < num_points { i } else { num_points - 1 });
+                let bw = (bx2 - bx).max(1);
+                svg.push_str(&format!(
+                    r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" clip-path="url(#{})"/>"#,
+                    bx, chart_y, bw, chart_h, signal_color(band_sig), clip_id
+                ));
+                band_start = i;
+                band_sig = cur_sig;
+            }
         }
     }
+
+    // ── Spread level line ─────────────────────────────────────────────────────
+    if num_points > 1 {
+        let mut path = String::new();
+        for (i, point) in series.points.iter().enumerate() {
+            let px = chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32;
+            let py = chart_y + chart_h
+                - ((point.value - min_val) / range * chart_h as f64) as i32;
+            if i == 0 {
+                path.push_str(&format!("M {} {}", px, py));
+            } else {
+                path.push_str(&format!(" L {} {}", px, py));
+            }
+        }
+        svg.push_str(&format!(
+            r#"<path d="{}" fill="none" stroke="black" stroke-width="2" clip-path="url(#{})"/>"#,
+            path, clip_id
+        ));
+    }
+
+    // ── Zero line ─────────────────────────────────────────────────────────────
+    let zero_y = chart_y + chart_h - ((0.0_f64 - min_val) / range * chart_h as f64) as i32;
+    svg.push_str(&format!(
+        r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="red" stroke-width="1" stroke-dasharray="4,2"/>"#,
+        chart_x, zero_y, chart_x + chart_w, zero_y
+    ));
+
+    // ── Y-axis labels ─────────────────────────────────────────────────────────
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:+.1}%</text>"#,
+        chart_x - 3, chart_y + 5, max_val
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:+.1}%</text>"#,
+        chart_x - 3, chart_y + chart_h, min_val
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{}" y="{}" text-anchor="end" font-size="9" fill="red">0%</text>"#,
+        chart_x - 3, zero_y + 3
+    ));
+
+    // ── Chart border (drawn last so it's on top) ──────────────────────────────
+    svg.push_str(&format!(
+        r#"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="black" stroke-width="1"/>"#,
+        chart_x, chart_y, chart_w, chart_h
+    ));
 
     svg
 }
