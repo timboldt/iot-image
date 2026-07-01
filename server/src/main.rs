@@ -1,6 +1,8 @@
 mod bitmap;
 mod fred;
+mod kalman;
 mod stocks;
+mod svg_common;
 mod weather;
 mod weight;
 
@@ -12,6 +14,7 @@ use axum::{
 };
 use clap::Parser;
 use fred::{fetch_fred, generate_fred_svg};
+use reverse_geocoder::ReverseGeocoder;
 use serde::Deserialize;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -52,7 +55,6 @@ struct Args {
     port: u16,
 }
 
-#[derive(Clone)]
 struct AppState {
     lat: String,
     lon: String,
@@ -61,6 +63,9 @@ struct AppState {
     stock_symbols: String,
     fred_api_key: String,
     weight_data_dir: String,
+    /// Built once at startup: constructing it loads and indexes the city dataset,
+    /// which is too expensive to redo on every weather request.
+    geocoder: ReverseGeocoder,
 }
 
 #[derive(Deserialize)]
@@ -125,7 +130,11 @@ async fn get_weather_bitmap(
 ) -> impl IntoResponse {
     let (lat, lon) = weather_coordinates(&state, &query);
     let bitmap = match fetch_weather(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(generate_weather_svg(&weather, query.battery_pct)),
+        Ok(weather) => render_svg_bytes(generate_weather_svg(
+            &weather,
+            query.battery_pct,
+            &state.geocoder,
+        )),
         Err(e) => fallback_bitmap_bytes("fetching weather", e),
     };
 
@@ -151,7 +160,7 @@ async fn get_weather_svg(
     let (lat, lon) = weather_coordinates(&state, &query);
     match fetch_weather(lat, lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct);
+            let svg_content = generate_weather_svg(&weather, query.battery_pct, &state.geocoder);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
         Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
@@ -164,7 +173,11 @@ async fn get_weather_overview_bitmap(
 ) -> impl IntoResponse {
     let (lat, lon) = weather_coordinates(&state, &query);
     let bitmap = match fetch_weather_overview(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(generate_weather_overview_svg(&weather, query.battery_pct)),
+        Ok(weather) => render_svg_bytes(generate_weather_overview_svg(
+            &weather,
+            query.battery_pct,
+            &state.geocoder,
+        )),
         Err(e) => fallback_bitmap_bytes("fetching weather overview", e),
     };
 
@@ -178,7 +191,8 @@ async fn get_weather_overview_svg(
     let (lat, lon) = weather_coordinates(&state, &query);
     match fetch_weather_overview(lat, lon, &state.api_key).await {
         Ok(weather) => {
-            let svg_content = generate_weather_overview_svg(&weather, query.battery_pct);
+            let svg_content =
+                generate_weather_overview_svg(&weather, query.battery_pct, &state.geocoder);
             ([("Content-Type", "image/svg+xml")], svg_content)
         }
         Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
@@ -323,6 +337,7 @@ async fn main() {
         stock_symbols: args.stock_symbols.clone(),
         fred_api_key: args.fred_api_key.clone(),
         weight_data_dir: args.weight_data_dir.clone(),
+        geocoder: ReverseGeocoder::new(),
     });
 
     let app = Router::new()
@@ -367,6 +382,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{weather_coordinates, AppState, QueryArgs};
+    use reverse_geocoder::ReverseGeocoder;
 
     fn test_state() -> AppState {
         AppState {
@@ -377,6 +393,7 @@ mod tests {
             stock_symbols: "QQQ".to_string(),
             fred_api_key: "fred-key".to_string(),
             weight_data_dir: "/tmp".to_string(),
+            geocoder: ReverseGeocoder::new(),
         }
     }
 

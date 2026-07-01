@@ -1,3 +1,4 @@
+use crate::svg_common;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use std::error::Error;
@@ -97,88 +98,38 @@ pub fn read_weight_csv(path: &Path) -> Result<Vec<WeightReading>, Box<dyn Error>
 // Layer 2: Data Processing - Kalman Filter
 // ============================================================================
 
-struct KalmanFilter {
-    // State vector: [weight, velocity]
-    x: [f64; 2],
-    // Covariance matrix: 2x2
-    p: [[f64; 2]; 2],
-    // Process noise
-    q: [[f64; 2]; 2],
-    // Measurement noise
-    r: f64,
-}
+use crate::kalman::KalmanFilter;
 
-impl KalmanFilter {
-    fn new(initial_weight: f64) -> Self {
-        Self {
-            x: [initial_weight, -0.5],        // Initial velocity estimate: -0.5 lbs/day
-            p: [[1.0, 0.0], [0.0, 1.0]],      // Initial covariance
-            q: [[0.005, 0.0], [0.0, 0.0005]], // Process noise (reduced for more smoothing)
-            r: 1.5,                           // Measurement noise (increased for more smoothing)
-        }
-    }
-
-    fn predict(&mut self, dt_days: f64) {
-        // State transition: x = F * x
-        // F = [[1, dt], [0, 1]]
-        let x0 = self.x[0] + self.x[1] * dt_days;
-        let x1 = self.x[1];
-        self.x = [x0, x1];
-
-        // Covariance: P = F * P * F^T + Q
-        let p00 = self.p[0][0]
-            + 2.0 * dt_days * self.p[0][1]
-            + dt_days * dt_days * self.p[1][1]
-            + self.q[0][0];
-        let p01 = self.p[0][1] + dt_days * self.p[1][1] + self.q[0][1];
-        let p10 = p01; // Symmetric
-        let p11 = self.p[1][1] + self.q[1][1];
-
-        self.p = [[p00, p01], [p10, p11]];
-    }
-
-    fn update(&mut self, measurement: f64) {
-        // Measurement model: H = [1, 0]
-        // Innovation: y = z - H * x
-        let y = measurement - self.x[0];
-
-        // Innovation covariance: S = H * P * H^T + R
-        let s = self.p[0][0] + self.r;
-
-        // Kalman gain: K = P * H^T / S
-        let k0 = self.p[0][0] / s;
-        let k1 = self.p[1][0] / s;
-
-        // Update state: x = x + K * y
-        self.x[0] += k0 * y;
-        self.x[1] += k1 * y;
-
-        // Update covariance: P = (I - K * H) * P
-        let p00 = (1.0 - k0) * self.p[0][0];
-        let p01 = (1.0 - k0) * self.p[0][1];
-        let p10 = self.p[1][0] - k1 * self.p[0][0];
-        let p11 = self.p[1][1] - k1 * self.p[0][1];
-
-        self.p = [[p00, p01], [p10, p11]];
-    }
-}
+// Initial velocity estimate: -0.5 lbs/day.
+const KALMAN_INITIAL_VELOCITY: f64 = -0.5;
+// Process noise (reduced for more smoothing).
+const KALMAN_Q_POSITION: f64 = 0.005;
+const KALMAN_Q_VELOCITY: f64 = 0.0005;
+// Measurement noise (increased for more smoothing).
+const KALMAN_R: f64 = 1.5;
 
 pub fn process_weight_data(readings: &[WeightReading]) -> Vec<KalmanState> {
     if readings.is_empty() {
         return Vec::new();
     }
 
-    let mut filter = KalmanFilter::new(readings[0].weight_lbs);
+    let mut filter = KalmanFilter::new(
+        readings[0].weight_lbs,
+        KALMAN_INITIAL_VELOCITY,
+        KALMAN_Q_POSITION,
+        KALMAN_Q_VELOCITY,
+        KALMAN_R,
+    );
     let mut states = Vec::new();
 
     // Add initial state
     states.push(KalmanState {
         timestamp: readings[0].timestamp,
-        weight_lbs: filter.x[0],
-        velocity_lbs_per_day: filter.x[1],
-        weight_variance: filter.p[0][0],
-        weight_velocity_covariance: filter.p[0][1],
-        velocity_variance: filter.p[1][1],
+        weight_lbs: filter.position(),
+        velocity_lbs_per_day: filter.velocity(),
+        weight_variance: filter.position_variance(),
+        weight_velocity_covariance: filter.position_velocity_covariance(),
+        velocity_variance: filter.velocity_variance(),
     });
 
     // Process subsequent readings
@@ -190,11 +141,11 @@ pub fn process_weight_data(readings: &[WeightReading]) -> Vec<KalmanState> {
 
         states.push(KalmanState {
             timestamp: readings[i].timestamp,
-            weight_lbs: filter.x[0],
-            velocity_lbs_per_day: filter.x[1],
-            weight_variance: filter.p[0][0],
-            weight_velocity_covariance: filter.p[0][1],
-            velocity_variance: filter.p[1][1],
+            weight_lbs: filter.position(),
+            velocity_lbs_per_day: filter.velocity(),
+            weight_variance: filter.position_variance(),
+            weight_velocity_covariance: filter.position_velocity_covariance(),
+            velocity_variance: filter.velocity_variance(),
         });
     }
 
@@ -497,10 +448,7 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     // Define gradient for battery bar
     svg.push_str(r#"<defs>"#);
-    svg.push_str(r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push_str(r#"</linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push_str(r#"</defs>"#);
 
     // White background
@@ -517,43 +465,21 @@ pub fn generate_forecast_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     // Battery bar in top right
     if let Some(pct) = battery_pct {
-        let battery_bar_width = 100;
-        let battery_bar_height = 12;
-        let battery_x = width - margin_right - battery_bar_width - 10;
-        let battery_y = 10;
-        let battery_inset = 2;
-        let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+        let battery_x = (width - margin_right - 100 - 10) as f64;
+        let battery_y = 10.0;
 
-        // Label
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="11" fill="black">Battery:</text>"#,
-            battery_x - 5,
-            battery_y + 10
+        svg.push_str(&svg_common::battery_label_svg(
+            battery_x - 5.0,
+            battery_y + 10.0,
+            "end",
+            11,
         ));
-
-        // Background (container) rectangle
-        svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="1.5" rx="2"/>"#,
-            battery_x, battery_y, battery_bar_width, battery_bar_height
-        ));
-
-        // ClipPath for battery bar
-        svg.push_str(&format!(r#"<clipPath id="batteryClipForecast{}"><rect x="{}" y="{}" width="{}" height="{}" rx="1"/></clipPath>"#,
+        svg.push_str(&svg_common::battery_bar_svg(
+            battery_x,
+            battery_y,
             pct,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_fill_width,
-            battery_bar_height - battery_inset * 2
-        ));
-
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClipForecast{})" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_bar_width - battery_inset * 2,
-            battery_bar_height - battery_inset * 2,
-            pct
+            1.5,
+            &format!("batteryClipForecast{}", pct),
         ));
     }
 
@@ -891,10 +817,7 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     // Define gradient for battery bar
     svg.push_str(r#"<defs>"#);
-    svg.push_str(r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push_str(r#"</linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push_str(r#"</defs>"#);
 
     // White background
@@ -911,43 +834,21 @@ pub fn generate_velocity_svg(data: &WeightData, battery_pct: Option<u8>) -> Stri
 
     // Battery bar in top right
     if let Some(pct) = battery_pct {
-        let battery_bar_width = 100;
-        let battery_bar_height = 12;
-        let battery_x = width - margin_right - battery_bar_width - 10;
-        let battery_y = 5;
-        let battery_inset = 2;
-        let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+        let battery_x = (width - margin_right - 100 - 10) as f64;
+        let battery_y = 5.0;
 
-        // Label
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="11" fill="black">Battery:</text>"#,
-            battery_x - 5,
-            battery_y + 10
+        svg.push_str(&svg_common::battery_label_svg(
+            battery_x - 5.0,
+            battery_y + 10.0,
+            "end",
+            11,
         ));
-
-        // Background (container) rectangle
-        svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="1.5" rx="2"/>"#,
-            battery_x, battery_y, battery_bar_width, battery_bar_height
-        ));
-
-        // ClipPath for battery bar
-        svg.push_str(&format!(r#"<clipPath id="batteryClip{}"><rect x="{}" y="{}" width="{}" height="{}" rx="1"/></clipPath>"#,
-            pct, // unique ID
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_fill_width,
-            battery_bar_height - battery_inset * 2
-        ));
-
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip{})" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_bar_width - battery_inset * 2,
-            battery_bar_height - battery_inset * 2,
-            pct
+        svg.push_str(&svg_common::battery_bar_svg(
+            battery_x,
+            battery_y,
+            pct,
+            1.5,
+            &format!("batteryClip{}", pct),
         ));
     }
 

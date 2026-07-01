@@ -6,18 +6,12 @@ rust-version = "1.75"
 
 [dependencies]
 chrono = "0.4"
-image = "0.25"
-num-complex = "0.4"
-plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder"] }
-plotters-backend = "0.3"
-plotters-bitmap = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4", features = ["derive"] }
 axum = "0.7"
-tower-http = { version = "0.6", features = ["fs", "trace"] }
 resvg = "0.44"
 usvg = "0.44"
 tiny-skia = "0.11"

@@ -1,3 +1,4 @@
+use crate::svg_common;
 use chrono::{Local, NaiveDate, Timelike};
 use serde::Deserialize;
 
@@ -64,73 +65,28 @@ pub enum SteepeningType {
     Stable,
 }
 
-struct KalmanFilter {
-    // State vector: [position, velocity]
-    x: [f64; 2],
-    // Covariance matrix: 2x2
-    p: [[f64; 2]; 2],
-    // Process noise
-    q: [[f64; 2]; 2],
-    // Measurement noise
-    r: f64,
-}
+use crate::kalman::KalmanFilter;
 
-impl KalmanFilter {
-    fn new(initial_position: f64) -> Self {
-        Self {
-            x: [initial_position, 0.0],
-            p: [[1.0, 0.0], [0.0, 1.0]],
-            // Position process noise ~0.07 pp/day; velocity process noise tightened to
-            // reduce spurious jumps while staying responsive to real trend changes.
-            q: [[0.005, 0.0], [0.0, 0.00005]],
-            // Measurement noise: FRED yields are in percentage points (e.g. 0.35).
-            // Daily noise std ~0.05 pp → R ≈ 0.0025.  Use 0.01 for slight smoothing.
-            r: 0.01,
-        }
-    }
-
-    fn predict(&mut self, dt_days: f64) {
-        // State transition: x = F * x, where F = [[1, dt], [0, 1]]
-        let x0 = self.x[0] + self.x[1] * dt_days;
-        let x1 = self.x[1];
-        self.x = [x0, x1];
-
-        // Covariance: P = F * P * F^T + Q
-        let p00 = self.p[0][0]
-            + 2.0 * dt_days * self.p[0][1]
-            + dt_days * dt_days * self.p[1][1]
-            + self.q[0][0];
-        let p01 = self.p[0][1] + dt_days * self.p[1][1] + self.q[0][1];
-        let p10 = p01;
-        let p11 = self.p[1][1] + self.q[1][1];
-        self.p = [[p00, p01], [p10, p11]];
-    }
-
-    fn update(&mut self, measurement: f64) {
-        // Measurement model: H = [1, 0]
-        let innovation = measurement - self.x[0];
-        let innovation_covariance = self.p[0][0] + self.r;
-        let k0 = self.p[0][0] / innovation_covariance;
-        let k1 = self.p[1][0] / innovation_covariance;
-
-        self.x[0] += k0 * innovation;
-        self.x[1] += k1 * innovation;
-
-        // Covariance update: P = (I - K * H) * P
-        let p00 = (1.0 - k0) * self.p[0][0];
-        let p01 = (1.0 - k0) * self.p[0][1];
-        let p10 = self.p[1][0] - k1 * self.p[0][0];
-        let p11 = self.p[1][1] - k1 * self.p[0][1];
-        self.p = [[p00, p01], [p10, p11]];
-    }
-}
+// Position process noise ~0.07 pp/day; velocity process noise tightened to reduce
+// spurious jumps while staying responsive to real trend changes.
+const KALMAN_Q_POSITION: f64 = 0.005;
+const KALMAN_Q_VELOCITY: f64 = 0.00005;
+// Measurement noise: FRED yields are in percentage points (e.g. 0.35).
+// Daily noise std ~0.05 pp → R ≈ 0.0025.  Use 0.01 for slight smoothing.
+const KALMAN_R: f64 = 0.01;
 
 fn compute_velocity_series(points: &[DataPoint]) -> Vec<DataPoint> {
     if points.is_empty() {
         return Vec::new();
     }
 
-    let mut filter = KalmanFilter::new(points[0].value);
+    let mut filter = KalmanFilter::new(
+        points[0].value,
+        0.0,
+        KALMAN_Q_POSITION,
+        KALMAN_Q_VELOCITY,
+        KALMAN_R,
+    );
     let mut velocity_points = Vec::with_capacity(points.len());
     velocity_points.push(DataPoint {
         date: points[0].date.clone(),
@@ -151,7 +107,7 @@ fn compute_velocity_series(points: &[DataPoint]) -> Vec<DataPoint> {
         filter.predict(dt_days);
         filter.update(point.value);
 
-        let velocity = filter.x[1];
+        let velocity = filter.velocity();
         velocity_points.push(DataPoint {
             date: point.date.clone(),
             value: velocity * YIELD_CURVE_VELOCITY_SCALE,
@@ -457,10 +413,7 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
 
     // Define gradient for battery bar
     svg.push_str(r#"<defs>"#);
-    svg.push_str(r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push_str(r#"</linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push_str(r#"</defs>"#);
 
     // Background
@@ -552,44 +505,21 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
 
     // Battery bar (if provided)
     let pct = battery_pct.unwrap_or(50);
-    let battery_bar_width = 100;
-    let battery_bar_height = 12;
-    let battery_x = width - 110;
-    let battery_y = footer_y - 10;
-    let battery_inset = 2;
-    let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+    let battery_x = (width - 110) as f64;
+    let battery_y = (footer_y - 10) as f64;
 
-    // Label
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery:</text>"#,
-        battery_x - 5,
-        footer_y
+    svg.push_str(&svg_common::battery_label_svg(
+        battery_x - 5.0,
+        footer_y as f64,
+        "end",
+        12,
     ));
-
-    // Background (container) rectangle
-    svg.push_str(&format!(
-        r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
-        battery_x, battery_y, battery_bar_width, battery_bar_height
-    ));
-
-    // ClipPath for battery bar
-    svg.push_str(r#"<clipPath id="batteryClip">"#);
-    svg.push_str(&format!(
-        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_fill_width,
-        battery_bar_height - battery_inset * 2
-    ));
-    svg.push_str(r#"</clipPath>"#);
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-        r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_bar_width - battery_inset * 2,
-        battery_bar_height - battery_inset * 2
+    svg.push_str(&svg_common::battery_bar_svg(
+        battery_x,
+        battery_y,
+        pct,
+        2.0,
+        "batteryClip",
     ));
 
     svg.push_str("</svg>");
@@ -874,17 +804,12 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
     }
 
     // Y-axis labels
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.0}</text>"#,
-        chart_x - 3,
-        chart_y + 5,
-        max_val
-    ));
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.0}</text>"#,
-        chart_x - 3,
-        chart_y + chart_h,
-        min_val
+    svg.push_str(&svg_common::axis_minmax_labels(
+        (chart_x - 3) as f64,
+        (chart_y + 5) as f64,
+        (chart_y + chart_h) as f64,
+        &format!("{:.0}", max_val),
+        &format!("{:.0}", min_val),
     ));
 
     // Drawdown threshold lines
@@ -1197,17 +1122,12 @@ fn generate_yield_curve_chart(
     ));
 
     // ── Y-axis labels ─────────────────────────────────────────────────────────
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:+.1}%</text>"#,
-        chart_x - 3,
-        chart_y + 5,
-        max_val
-    ));
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:+.1}%</text>"#,
-        chart_x - 3,
-        chart_y + chart_h,
-        min_val
+    svg.push_str(&svg_common::axis_minmax_labels(
+        (chart_x - 3) as f64,
+        (chart_y + 5) as f64,
+        (chart_y + chart_h) as f64,
+        &format!("{:+.1}%", max_val),
+        &format!("{:+.1}%", min_val),
     ));
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" text-anchor="end" font-size="9" fill="black">0%</text>"#,
@@ -1311,31 +1231,16 @@ fn generate_area_chart_internal(
     }
 
     // Y-axis labels (min and max) - swap if inverted
-    if invert_y {
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-            chart_x - 5,
-            chart_y + 5,
-            min_val
-        ));
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-            chart_x - 5,
-            chart_y + chart_h,
-            max_val
-        ));
+    let (top_label, bottom_label) = if invert_y {
+        (min_val, max_val)
     } else {
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-            chart_x - 5,
-            chart_y + 5,
-            max_val
-        ));
-        svg.push_str(&format!(
-            r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{:.1}</text>"#,
-            chart_x - 5,
-            chart_y + chart_h,
-            min_val
-        ));
-    }
+        (max_val, min_val)
+    };
+    svg.push_str(&svg_common::axis_minmax_labels(
+        (chart_x - 5) as f64,
+        (chart_y + 5) as f64,
+        (chart_y + chart_h) as f64,
+        &format!("{:.1}", top_label),
+        &format!("{:.1}", bottom_label),
+    ));
 }

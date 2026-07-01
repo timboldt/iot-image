@@ -1,3 +1,4 @@
+use crate::svg_common;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::prelude::*;
 use chrono::Timelike;
@@ -282,6 +283,7 @@ fn escape_xml_text(text: &str) -> String {
 pub fn generate_weather_overview_svg(
     weather: &WeatherOverviewData,
     battery_pct: Option<u8>,
+    geocoder: &ReverseGeocoder,
 ) -> String {
     let mut svg = String::from(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">"#,
@@ -290,13 +292,7 @@ pub fn generate_weather_overview_svg(
 
     svg.push_str(r#"  <defs>"#);
     svg.push('\n');
-    svg.push_str(r#"    <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push('\n');
     svg.push_str(r#"  </defs>"#);
     svg.push('\n');
@@ -304,7 +300,6 @@ pub fn generate_weather_overview_svg(
     svg.push_str(r#"  <rect width="800" height="480" fill="white"/>"#);
     svg.push('\n');
 
-    let geocoder = ReverseGeocoder::new();
     let coords = (weather.lat as f64, weather.lon as f64);
     let search_result = geocoder.search(coords);
     svg.push_str(r#"  <text x="20" y="38" font-family="Arial" font-size="30" font-weight="bold" fill="black">Weather Overview</text>"#);
@@ -334,41 +329,22 @@ pub fn generate_weather_overview_svg(
 
     let footer_y = 470;
     let pct = battery_pct.unwrap_or(50);
-    let battery_bar_width = 100.0;
-    let battery_bar_height = 12.0;
     let battery_x = 75.0;
-    let battery_y = footer_y as f32 - 10.0;
-    let battery_inset = 2.0;
-    let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
+    let battery_y = footer_y as f64 - 10.0;
 
-    svg.push_str(&format!(
-        r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
-        footer_y
+    svg.push_str(&svg_common::battery_label_svg(
+        10.0,
+        footer_y as f64,
+        "start",
+        12,
     ));
     svg.push('\n');
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
-        battery_x, battery_y, battery_bar_width, battery_bar_height
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  <clipPath id="batteryClip">"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_fill_width,
-        battery_bar_height - battery_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_bar_width - battery_inset * 2.0,
-        battery_bar_height - battery_inset * 2.0
+    svg.push_str(&svg_common::battery_bar_svg(
+        battery_x,
+        battery_y,
+        pct,
+        2.0,
+        "batteryClip",
     ));
     svg.push('\n');
 
@@ -398,7 +374,11 @@ pub fn generate_weather_overview_svg(
 ///
 /// # Returns
 /// A String containing the SVG markup
-pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> String {
+pub fn generate_weather_svg(
+    weather: &WeatherData,
+    battery_pct: Option<u8>,
+    geocoder: &ReverseGeocoder,
+) -> String {
     if weather.daily.is_empty() {
         return r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
     <text x="400" y="240" text-anchor="middle" font-size="20">Error: weather.daily is empty</text>
@@ -442,13 +422,7 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push('\n');
 
     // Battery gradient: red (low) -> green (full)
-    svg.push_str(r#"    <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push('\n');
 
     // Wind gradient: green (calm) -> orange (windy) -> red (dangerous)
@@ -515,7 +489,6 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
     svg.push('\n');
 
     // City name from coordinates
-    let geocoder = ReverseGeocoder::new();
     let coords = (weather.lat as f64, weather.lon as f64);
     let search_result = geocoder.search(coords);
     svg.push_str(&format!(
@@ -1077,48 +1050,24 @@ pub fn generate_weather_svg(weather: &WeatherData, battery_pct: Option<u8>) -> S
 
     // Battery bar (if provided) - now on the left
     let pct = battery_pct.unwrap_or(50);
-    let battery_bar_width = 100.0;
-    let battery_bar_height = 12.0;
     let battery_x = 75.0;
-    let battery_y = footer_y as f32 - 10.0;
-    let battery_inset = 2.0;
-    let battery_fill_width = (battery_bar_width - battery_inset * 2.0) * (pct as f32 / 100.0);
+    let battery_y = footer_y as f64 - 10.0;
 
     // Label
-    svg.push_str(&format!(
-        r#"  <text x="10" y="{}" font-size="12" fill="black">Battery:</text>"#,
-        footer_y
+    svg.push_str(&svg_common::battery_label_svg(
+        10.0,
+        footer_y as f64,
+        "start",
+        12,
     ));
     svg.push('\n');
 
-    // Background (container) rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
-        battery_x, battery_y, battery_bar_width, battery_bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath for battery bar
-    svg.push_str(r#"  <clipPath id="batteryClip">"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_fill_width,
-        battery_bar_height - battery_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_bar_width - battery_inset * 2.0,
-        battery_bar_height - battery_inset * 2.0
+    svg.push_str(&svg_common::battery_bar_svg(
+        battery_x,
+        battery_y,
+        pct,
+        2.0,
+        "batteryClip",
     ));
     svg.push('\n');
 

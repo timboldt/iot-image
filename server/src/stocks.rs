@@ -1,3 +1,4 @@
+use crate::svg_common;
 use serde::Deserialize;
 
 // Twelve Data API response structures
@@ -140,10 +141,7 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
 
     // Define gradient for battery bar
     svg.push_str(r#"<defs>"#);
-    svg.push_str(r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push_str(r#"</linearGradient>"#);
+    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
     svg.push_str(r#"</defs>"#);
 
     // Background
@@ -189,45 +187,22 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
 
     // Battery bar (if provided)
     let pct = battery_pct.unwrap_or(50);
-    let battery_bar_width = 100;
-    let battery_bar_height = 12;
-    let battery_x = width - 110;
-    let battery_y = footer_y - 10;
-    let battery_inset = 2;
-    let battery_fill_width = (battery_bar_width - battery_inset * 2) * pct as i32 / 100;
+    let battery_x = (width - 110) as f64;
+    let battery_y = (footer_y - 10) as f64;
 
-    // Label
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="12" fill="black">Battery:</text>"#,
-        battery_x - 5,
-        footer_y
+    svg.push_str(&svg_common::battery_label_svg(
+        battery_x - 5.0,
+        footer_y as f64,
+        "end",
+        12,
     ));
-
-    // Background (container) rectangle
-    svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="2"/>"#,
-            battery_x, battery_y, battery_bar_width, battery_bar_height
-        ));
-
-    // ClipPath for battery bar
-    svg.push_str(r#"<clipPath id="batteryClip">"#);
-    svg.push_str(&format!(
-        r#"<rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-        battery_x + battery_inset,
-        battery_y + battery_inset,
-        battery_fill_width,
-        battery_bar_height - battery_inset * 2
+    svg.push_str(&svg_common::battery_bar_svg(
+        battery_x,
+        battery_y,
+        pct,
+        2.0,
+        "batteryClip",
     ));
-    svg.push_str(r#"</clipPath>"#);
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#batteryGradient)" clip-path="url(#batteryClip)" rx="1"/>"#,
-            battery_x + battery_inset,
-            battery_y + battery_inset,
-            battery_bar_width - battery_inset * 2,
-            battery_bar_height - battery_inset * 2
-        ));
 
     svg.push_str("</svg>");
     svg
@@ -365,17 +340,12 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
         }
     };
 
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{}</text>"#,
-        chart_x - 5,
-        chart_y + 5,
-        format_price(max_price)
-    ));
-    svg.push_str(&format!(
-        r#"<text x="{}" y="{}" text-anchor="end" font-size="10" fill="black">{}</text>"#,
-        chart_x - 5,
-        chart_y + chart_h,
-        format_price(min_price)
+    svg.push_str(&svg_common::axis_minmax_labels(
+        (chart_x - 5) as f64,
+        (chart_y + 5) as f64,
+        (chart_y + chart_h) as f64,
+        &format_price(max_price),
+        &format_price(min_price),
     ));
 
     svg
