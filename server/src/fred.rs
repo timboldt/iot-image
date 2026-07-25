@@ -1,5 +1,5 @@
 use crate::svg_common;
-use chrono::{Local, NaiveDate, Timelike};
+use chrono::{Local, NaiveDate};
 use serde::Deserialize;
 
 // FRED API response structures
@@ -16,15 +16,12 @@ pub struct FredObservation {
 
 #[derive(Debug)]
 pub struct SeriesData {
-    #[allow(dead_code)]
-    pub symbol: String,
     pub name: String,
     pub points: Vec<DataPoint>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DataPoint {
-    #[allow(dead_code)]
     pub date: String,
     pub value: f64,
 }
@@ -38,8 +35,6 @@ pub struct FredData {
     /// Per-point signal classification, parallel to yield_curve.points
     pub yield_curve_signals: Vec<SteepeningType>,
     pub yield_curve_steepening: SteepeningType,
-    /// Current raw T10Y3M spread level (percentage points, from FRED)
-    pub yield_curve_level: f64,
     pub end_date: String,
     pub duration: usize,
 }
@@ -121,23 +116,18 @@ fn compute_velocity_series(points: &[DataPoint]) -> Vec<DataPoint> {
     velocity_points
 }
 
-/// Estimates acceleration as the average rate of velocity change over the last
-/// `window_days` observations.  Returns scaled units (VELOCITY_SCALE / day).
-fn compute_acceleration(velocity_points: &[DataPoint], window_days: usize) -> f64 {
-    let n = velocity_points.len();
-    if n < 2 {
-        return 0.0;
-    }
-    let window = window_days.min(n - 1);
-    let recent = velocity_points[n - 1].value;
-    let past = velocity_points[n - 1 - window].value;
-    (recent - past) / window as f64
-}
-
 fn build_date_map(points: &[DataPoint]) -> std::collections::HashMap<String, f64> {
     points.iter().map(|p| (p.date.clone(), p.value)).collect()
 }
 
+/// Classifies one observation from the velocities of the spread and each leg.
+///
+/// A positive spread velocity covers two very different macro environments:
+/// bull steepening (3M falling fast as the market prices emergency Fed cuts —
+/// a crisis signal) and bear steepening (10Y rising on an expanding term
+/// premium — benign). A negative velocity is split by the current spread
+/// *level*: still positive means flattening, at or below zero means a
+/// deepening inversion.
 fn classify_at_point(
     spread_vel: f64,
     dgs10_vel: f64,
@@ -327,31 +317,8 @@ pub async fn fetch_fred(
     let dgs10_vel = dgs10_vel_windowed.last().map(|p| p.value).unwrap_or(0.0);
     let dtb3_vel = dtb3_vel_windowed.last().map(|p| p.value).unwrap_or(0.0);
 
-    let steepening = if spread_vel.abs() < YIELD_CURVE_VEL_THRESHOLD {
-        SteepeningType::Stable
-    } else if spread_vel > YIELD_CURVE_VEL_THRESHOLD {
-        // 3M falling faster than 10Y rising → bull steepening (crisis)
-        if dtb3_vel < -YIELD_CURVE_VEL_THRESHOLD && (-dtb3_vel) > dgs10_vel.max(0.0) {
-            SteepeningType::BullSteepening
-        } else {
-            SteepeningType::BearSteepening
-        }
-    } else {
-        // Negative velocity (spread shrinking). Distinguish by the current spread LEVEL:
-        // - Spread still positive: "Flattening" (bearish trend but not yet inverted)
-        // - Spread negative or near zero: "Inverting" (deepening inversion)
-        let current_spread = yield_curve.last().map(|p| p.value).unwrap_or(0.0);
-        if current_spread > 0.1 {
-            SteepeningType::Flattening
-        } else {
-            SteepeningType::Inverting
-        }
-    };
-    // Warn unused; stored for potential future use in chart annotations.
-    let _ = dgs10_vel;
-
-    let _acceleration = compute_acceleration(&yield_curve_velocity_windowed, 7);
     let current_spread_level = yield_curve.last().map(|p| p.value).unwrap_or(0.0);
+    let steepening = classify_at_point(spread_vel, dgs10_vel, dtb3_vel, current_spread_level);
 
     // Build per-point signal series aligned with the windowed spread for band rendering.
     let yield_curve_signals: Vec<SteepeningType> = yield_curve_windowed
@@ -366,28 +333,23 @@ pub async fn fetch_fred(
 
     Ok(FredData {
         vix: SeriesData {
-            symbol: "VIX".to_string(),
             name: "VIX Fear Gauge".to_string(),
             points: vix,
         },
         sp500: SeriesData {
-            symbol: "SPX".to_string(),
-            name: "S&amp;P 500".to_string(),
+            name: "S&P 500".to_string(),
             points: sp500,
         },
         credit_spread: SeriesData {
-            symbol: "HY-OAS".to_string(),
             name: "High Yield Spreads".to_string(),
             points: credit_spread,
         },
         yield_curve: SeriesData {
-            symbol: "T10Y3M".to_string(),
             name: "Yield Curve (10Y-3M)".to_string(),
             points: yield_curve_windowed,
         },
         yield_curve_signals,
         yield_curve_steepening: steepening,
-        yield_curve_level: current_spread_level,
         end_date: display_end_date,
         duration,
     })
@@ -480,7 +442,6 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
         &fred.yield_curve,
         &fred.yield_curve_signals,
         &fred.yield_curve_steepening,
-        fred.yield_curve_level,
         positions[3].0,
         positions[3].1,
         chart_width,
@@ -490,18 +451,7 @@ pub fn generate_fred_svg(fred: &FredData, battery_pct: Option<u8>) -> String {
     // Footer with last updated and battery bar
     let footer_y = height - 10;
 
-    // Last updated timestamp
-    let now = Local::now();
-    let timestamp = format!(
-        "Last updated: {:02}:{:02}:{:02}",
-        now.hour(),
-        now.minute(),
-        now.second()
-    );
-    svg.push_str(&format!(
-        r#"<text x="10" y="{}" font-size="12" fill="black">{}</text>"#,
-        footer_y, timestamp
-    ));
+    svg.push_str(&svg_common::last_updated_text(10.0, footer_y as f64, "start"));
 
     // Battery bar (if provided)
     let pct = battery_pct.unwrap_or(50);
@@ -541,7 +491,7 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
             r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
             x + 5,
             y + 20,
-            series.name
+            svg_common::escape_xml(&series.name)
         ));
 
         svg.push_str(&format!(
@@ -560,111 +510,41 @@ fn generate_vix_chart(series: &SeriesData, x: i32, y: i32, width: i32, height: i
     let calm_threshold = 20.0;
     let fear_threshold = 40.0;
 
-    // Calculate data range, ensuring thresholds are always visible
-    let data_min = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(0.0);
-    let data_max = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .max_by(|a, b| a.total_cmp(b))
-        .unwrap_or(100.0);
-
-    let min_val = data_min.min(calm_threshold);
-    let max_val = data_max.max(fear_threshold);
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
-
-    // Create gradient ID unique to this chart
-    let gradient_id = format!("vixGradient_{}_{}", x, y);
-
-    // Create gradient: green (bottom/low VIX) → orange (mid) → red (top/high VIX)
-    // Standard Cartesian: y1="100%"=bottom=min_val, y2="0%"=top=max_val
-    svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
-        gradient_id
-    ));
-
-    // Calculate gradient stop positions based on data range
-    if max_val <= calm_threshold {
-        // All calm - just green
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    } else if max_val <= fear_threshold {
-        // Calm to elevated - green to orange
-        let calm_pct = ((calm_threshold - min_val) / range * 100.0).clamp(0.0, 100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-            calm_pct
-        ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
-    } else {
-        // Full range - green, orange, red
-        if min_val < calm_threshold {
-            let calm_pct = ((calm_threshold - min_val) / range * 100.0).min(100.0);
-            let fear_pct = ((fear_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-                calm_pct
-            ));
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:red;stop-opacity:1" />"#,
-                fear_pct
-            ));
-            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-        } else if min_val < fear_threshold {
-            let fear_pct = ((fear_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:red;stop-opacity:1" />"#,
-                fear_pct
-            ));
-            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-        } else {
-            svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-        }
-    }
-
-    svg.push_str(r#"</linearGradient></defs>"#);
-
-    // Standard orientation: high VIX spikes up into red zone
-    generate_area_chart_internal(
-        &mut svg,
-        series,
+    // Pad the range so both regime thresholds stay on screen.
+    let (data_min, data_max) = data_bounds(&series.points);
+    let frame = ChartFrame::new(
         x,
         y,
         width,
         height,
-        &format!("url(#{})", gradient_id),
-        None,
-        false, // invert_y: false — high values at top, low values at bottom
+        data_min.min(calm_threshold),
+        data_max.max(fear_threshold),
     );
 
-    // Threshold lines: standard Cartesian formula
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_h = height - 55;
-    let chart_w = width - 50;
+    // Gradient: green (bottom/low VIX) → orange (mid) → red (top/high VIX).
+    // Standard Cartesian: y1="100%"=bottom=frame.min, y2="0%"=top=frame.max
+    let gradient_id = format!("vixGradient_{}_{}", x, y);
+    svg.push_str(&gradient_def(
+        &gradient_id,
+        &[
+            (0.0, "green"),
+            (frame.pct(calm_threshold), "orange"),
+            (frame.pct(fear_threshold), "red"),
+            (100.0, "red"),
+        ],
+    ));
 
+    // Standard orientation: high VIX spikes up into the red zone.
+    draw_area_series(
+        &mut svg,
+        &series.points,
+        &frame,
+        &format!("url(#{})", gradient_id),
+    );
+
+    // The frame is padded to contain both thresholds, so both always render.
     for (threshold, color) in [(calm_threshold, "green"), (fear_threshold, "red")] {
-        if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
-            svg.push_str(&format!(
-                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
-                chart_x, line_y, chart_x + chart_w, line_y, color
-            ));
-        }
+        svg.push_str(&frame.threshold_line(threshold, color));
     }
 
     svg
@@ -685,7 +565,7 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
             r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
             x + 5,
             y + 20,
-            series.name
+            svg_common::escape_xml(&series.name)
         ));
 
         svg.push_str(&format!(
@@ -700,134 +580,54 @@ fn generate_sp500_chart(series: &SeriesData, x: i32, y: i32, width: i32, height:
         return svg;
     }
 
-    // Calculate data range
-    let data_min = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(0.0);
-    let data_max = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .max_by(|a, b| a.total_cmp(b))
-        .unwrap_or(100.0);
+    let (data_min, data_max) = data_bounds(&series.points);
 
-    // Calculate drawdown thresholds based on highest value in chart
+    // Drawdown thresholds, relative to the highest value in the window.
     let threshold_7 = data_max * 0.93; // -7%
     let threshold_20 = data_max * 0.80; // -20%
 
-    // Ensure both thresholds are always visible
-    let min_val = data_min.min(threshold_20);
-    let max_val = data_max;
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
+    // Pad the range so the -20% threshold stays on screen.
+    let frame = ChartFrame::new(x, y, width, height, data_min.min(threshold_20), data_max);
 
-    // Create gradient ID unique to this chart
+    // Gradient: green above -7%, orange down to -20%, red below.
     let gradient_id = format!("sp500Gradient_{}_{}", x, y);
-
-    // Create gradient: green (0 to -7%), orange (-7% to -20%), red (below -20%)
-    svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
-        gradient_id
+    svg.push_str(&gradient_def(
+        &gradient_id,
+        &[
+            (0.0, "red"),
+            (frame.pct(threshold_20), "orange"),
+            (frame.pct(threshold_7), "green"),
+            (100.0, "green"),
+        ],
     ));
 
-    // Calculate gradient stop positions
-    if min_val >= threshold_7 {
-        // All green - no drawdown beyond -7%
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    } else if min_val >= threshold_20 {
-        // Green to yellow - drawdown between 0% and -20% (smooth transition)
-        let threshold_7_pct = ((threshold_7 - min_val) / range * 100.0).min(100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-            threshold_7_pct
-        ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    } else {
-        // Full range - green, yellow, and red (smooth transitions)
-        let threshold_7_pct = ((threshold_7 - min_val) / range * 100.0).min(100.0);
-        let threshold_20_pct = ((threshold_20 - min_val) / range * 100.0).min(100.0);
-
-        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-            threshold_20_pct
-        ));
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-            threshold_7_pct
-        ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    }
-
-    svg.push_str(r#"</linearGradient></defs>"#);
-
-    // S&P 500: draw a gradient background rect (shows which drawdown zone we're in),
-    // then the price as a plain line on top. Area fill is useless here because in a
-    // sustained uptrend the line stays near the top and the entire body fills with the
-    // low-price (red/orange) colors, making the gradient meaningless.
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_h = height - 55;
-    let chart_w = width - 50;
-
-    // Gradient background
+    // Unlike VIX/credit this uses a gradient background rect rather than an
+    // area fill: in a sustained uptrend the line sits near the top and the
+    // filled body would be almost entirely low-price colours, which says
+    // nothing useful.
     svg.push_str(&format!(
         r#"<rect x="{}" y="{}" width="{}" height="{}" fill="url(#{})" fill-opacity="0.35"/>"#,
-        chart_x, chart_y, chart_w, chart_h, gradient_id
+        frame.x, frame.y, frame.w, frame.h, gradient_id
     ));
 
-    // Price line
-    let num_points = series.points.len();
-    if num_points > 1 {
-        let mut path = String::new();
-        for (i, point) in series.points.iter().enumerate() {
-            let px = chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32;
-            let py = chart_y + chart_h - ((point.value - min_val) / range * chart_h as f64) as i32;
-            if i == 0 {
-                path.push_str(&format!("M {} {}", px, py));
-            } else {
-                path.push_str(&format!(" L {} {}", px, py));
-            }
-        }
+    if series.points.len() > 1 {
         svg.push_str(&format!(
             r#"<path d="{}" fill="none" stroke="black" stroke-width="2"/>"#,
-            path
+            frame.polyline(&series.points)
         ));
     }
 
-    // Y-axis labels
-    svg.push_str(&svg_common::axis_minmax_labels(
-        (chart_x - 3) as f64,
-        (chart_y + 5) as f64,
-        (chart_y + chart_h) as f64,
-        &format!("{:.0}", max_val),
-        &format!("{:.0}", min_val),
-    ));
+    svg.push_str(&frame.axis_labels(3, |v| format!("{:.0}", v)));
 
-    // Drawdown threshold lines
+    // The frame is padded to contain both drawdown levels, so both always render.
     for (threshold, color) in [(threshold_7, "green"), (threshold_20, "red")] {
-        if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
-            svg.push_str(&format!(
-                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
-                chart_x, line_y, chart_x + chart_w, line_y, color
-            ));
-        }
+        svg.push_str(&frame.threshold_line(threshold, color));
     }
 
     // Chart area border (drawn last so it sits on top)
     svg.push_str(&format!(
         r#"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="black" stroke-width="1"/>"#,
-        chart_x, chart_y, chart_w, chart_h
+        frame.x, frame.y, frame.w, frame.h
     ));
 
     svg
@@ -854,7 +654,7 @@ fn generate_credit_spread_chart(
             r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
             x + 5,
             y + 20,
-            series.name
+            svg_common::escape_xml(&series.name)
         ));
 
         svg.push_str(&format!(
@@ -873,116 +673,49 @@ fn generate_credit_spread_chart(
     let normal_threshold = 3.0;
     let stress_threshold = 4.0;
 
-    // Calculate data range, ensuring thresholds are always visible
-    let data_min = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(0.0);
-    let data_max = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .max_by(|a, b| a.total_cmp(b))
-        .unwrap_or(10.0);
-
-    let min_val = data_min.min(normal_threshold);
-    let max_val = data_max.max(stress_threshold);
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
-
-    // Create gradient ID unique to this chart
-    let gradient_id = format!("creditGradient_{}_{}", x, y);
-
-    // Create gradient: green (bottom/low spread) → orange → red (top/high spread)
-    // Standard Cartesian: y1="100%"=bottom=min_val, y2="0%"=top=max_val
-    svg.push_str(&format!(
-        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
-        gradient_id
-    ));
-
-    // Calculate gradient stop positions based on data range
-    if max_val <= normal_threshold {
-        // All normal - just green
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:green;stop-opacity:1" />"#);
-    } else if min_val >= stress_threshold {
-        // All panic - just red
-        svg.push_str(r#"<stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-    } else if min_val < normal_threshold {
-        let normal_pct = ((normal_threshold - min_val) / range * 100.0).min(100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:green;stop-opacity:1" />"#,
-            normal_pct
-        ));
-        if max_val > stress_threshold {
-            let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
-            svg.push_str(&format!(
-                r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-                stress_pct
-            ));
-            svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-        } else {
-            svg.push_str(r#"<stop offset="100%" style="stop-color:orange;stop-opacity:1" />"#);
-        }
-    } else {
-        // Starts in stress zone
-        let stress_pct = ((stress_threshold - min_val) / range * 100.0).min(100.0);
-        svg.push_str(r#"<stop offset="0%" style="stop-color:orange;stop-opacity:1" />"#);
-        svg.push_str(&format!(
-            r#"<stop offset="{}%" style="stop-color:orange;stop-opacity:1" />"#,
-            stress_pct
-        ));
-        svg.push_str(r#"<stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-    }
-
-    svg.push_str(r#"</linearGradient></defs>"#);
-
-    // Standard orientation: high spreads spike up into red zone
-    generate_area_chart_internal(
-        &mut svg,
-        series,
+    // Pad the range so both regime thresholds stay on screen.
+    let (data_min, data_max) = data_bounds(&series.points);
+    let frame = ChartFrame::new(
         x,
         y,
         width,
         height,
-        &format!("url(#{})", gradient_id),
-        None,
-        false, // invert_y: false — high values at top, low values at bottom
+        data_min.min(normal_threshold),
+        data_max.max(stress_threshold),
     );
 
-    // Threshold lines: standard Cartesian formula
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_h = height - 55;
-    let chart_w = width - 50;
+    // Gradient: green up to the normal threshold, then orange into red.
+    let gradient_id = format!("creditGradient_{}_{}", x, y);
+    svg.push_str(&gradient_def(
+        &gradient_id,
+        &[
+            (0.0, "green"),
+            (frame.pct(normal_threshold), "green"),
+            (frame.pct(stress_threshold), "orange"),
+            (100.0, "red"),
+        ],
+    ));
 
+    // Standard orientation: high spreads spike up into the red zone.
+    draw_area_series(
+        &mut svg,
+        &series.points,
+        &frame,
+        &format!("url(#{})", gradient_id),
+    );
+
+    // The frame is padded to contain both thresholds, so both always render.
     for (threshold, color) in [(normal_threshold, "green"), (stress_threshold, "red")] {
-        if threshold >= data_min && threshold <= data_max {
-            let line_y =
-                chart_y + chart_h - ((threshold - min_val) / range * chart_h as f64) as i32;
-            svg.push_str(&format!(
-                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
-                chart_x, line_y, chart_x + chart_w, line_y, color
-            ));
-        }
+        svg.push_str(&frame.threshold_line(threshold, color));
     }
 
     svg
 }
 
-#[allow(clippy::too_many_arguments)]
 fn generate_yield_curve_chart(
     series: &SeriesData,
     signals: &[SteepeningType],
     steepening: &SteepeningType,
-    _spread_level: f64,
     x: i32,
     y: i32,
     width: i32,
@@ -1008,7 +741,7 @@ fn generate_yield_curve_chart(
         r#"<text x="{}" y="{}" text-anchor="start" font-size="16" font-weight="bold" fill="black">{}</text>"#,
         x + 5,
         y + 20,
-        series.name
+        svg_common::escape_xml(&series.name)
     ));
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" text-anchor="end" font-size="13" font-weight="bold" fill="{}">{}</text>"#,
@@ -1019,32 +752,9 @@ fn generate_yield_curve_chart(
         return svg;
     }
 
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_w = width - 50;
-    let chart_h = height - 55;
-
-    // Calculate data range, always spanning zero so the inversion line is meaningful
-    let data_min = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(-2.0);
-    let data_max = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .max_by(|a, b| a.total_cmp(b))
-        .unwrap_or(3.0);
-
-    let min_val = data_min.min(-0.1);
-    let max_val = data_max.max(0.5);
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
+    // Pad the range so it always spans zero and the inversion line is meaningful.
+    let (data_min, data_max) = data_bounds(&series.points);
+    let frame = ChartFrame::new(x, y, width, height, data_min.min(-0.1), data_max.max(0.5));
 
     let num_points = series.points.len();
 
@@ -1052,7 +762,7 @@ fn generate_yield_curve_chart(
     let clip_id = format!("ycClip_{}_{}", x, y);
     svg.push_str(&format!(
         r#"<defs><clipPath id="{}"><rect x="{}" y="{}" width="{}" height="{}"/></clipPath></defs>"#,
-        clip_id, chart_x, chart_y, chart_w, chart_h
+        clip_id, frame.x, frame.y, frame.w, frame.h
     ));
 
     // ── Vertical signal bands ─────────────────────────────────────────────────
@@ -1069,8 +779,7 @@ fn generate_yield_curve_chart(
         let mut band_start = 0usize;
         let mut band_sig = signals.first().unwrap_or(&SteepeningType::Stable);
 
-        let px =
-            |i: usize| -> i32 { chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32 };
+        let px = |i: usize| -> i32 { frame.px(i, num_points) };
 
         for i in 1..=num_points {
             let cur_sig = if i < num_points {
@@ -1088,7 +797,7 @@ fn generate_yield_curve_chart(
                 let bw = (bx2 - bx).max(1);
                 svg.push_str(&format!(
                     r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" clip-path="url(#{})"/>"#,
-                    bx, chart_y, bw, chart_h, signal_color(band_sig), clip_id
+                    bx, frame.y, bw, frame.h, signal_color(band_sig), clip_id
                 ));
                 band_start = i;
                 band_sig = cur_sig;
@@ -1098,149 +807,182 @@ fn generate_yield_curve_chart(
 
     // ── Spread level line ─────────────────────────────────────────────────────
     if num_points > 1 {
-        let mut path = String::new();
-        for (i, point) in series.points.iter().enumerate() {
-            let px = chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32;
-            let py = chart_y + chart_h - ((point.value - min_val) / range * chart_h as f64) as i32;
-            if i == 0 {
-                path.push_str(&format!("M {} {}", px, py));
-            } else {
-                path.push_str(&format!(" L {} {}", px, py));
-            }
-        }
         svg.push_str(&format!(
             r#"<path d="{}" fill="none" stroke="black" stroke-width="2" clip-path="url(#{})"/>"#,
-            path, clip_id
+            frame.polyline(&series.points),
+            clip_id
         ));
     }
 
     // ── Zero line ─────────────────────────────────────────────────────────────
-    let zero_y = chart_y + chart_h - ((0.0_f64 - min_val) / range * chart_h as f64) as i32;
+    let zero_y = frame.py(0.0);
     svg.push_str(&format!(
         r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="black" stroke-width="1" stroke-dasharray="4,2"/>"#,
-        chart_x, zero_y, chart_x + chart_w, zero_y
+        frame.x, zero_y, frame.x + frame.w, zero_y
     ));
 
     // ── Y-axis labels ─────────────────────────────────────────────────────────
-    svg.push_str(&svg_common::axis_minmax_labels(
-        (chart_x - 3) as f64,
-        (chart_y + 5) as f64,
-        (chart_y + chart_h) as f64,
-        &format!("{:+.1}%", max_val),
-        &format!("{:+.1}%", min_val),
-    ));
+    svg.push_str(&frame.axis_labels(3, |v| format!("{:+.1}%", v)));
     svg.push_str(&format!(
         r#"<text x="{}" y="{}" text-anchor="end" font-size="9" fill="black">0%</text>"#,
-        chart_x - 3,
+        frame.x - 3,
         zero_y + 3
     ));
 
     // ── Chart border (drawn last so it's on top) ──────────────────────────────
     svg.push_str(&format!(
         r#"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="black" stroke-width="1"/>"#,
-        chart_x, chart_y, chart_w, chart_h
+        frame.x, frame.y, frame.w, frame.h
     ));
 
     svg
 }
 
-#[allow(clippy::too_many_arguments)]
-fn generate_area_chart_internal(
-    svg: &mut String,
-    series: &SeriesData,
+/// The inner plotting area of a chart panel, together with the value range
+/// mapped onto it.
+///
+/// Every element of a chart — the curve, threshold lines, gradient stops and
+/// axis labels — must be positioned through one shared frame. Previously the
+/// callers padded the range so their thresholds stayed on screen while the
+/// plotting helper re-derived a tighter range from the data alone, so the
+/// dashed threshold lines were drawn at a different scale than the curve they
+/// were meant to annotate.
+struct ChartFrame {
     x: i32,
     y: i32,
-    width: i32,
-    height: i32,
-    color: &str,
-    threshold: Option<f64>,
-    invert_y: bool,
-) {
-    if series.points.is_empty() {
+    w: i32,
+    h: i32,
+    min: f64,
+    max: f64,
+}
+
+impl ChartFrame {
+    /// `panel_*` is the outer bordered box; the plot area is inset to leave
+    /// room for the title row and the y-axis labels.
+    fn new(panel_x: i32, panel_y: i32, panel_w: i32, panel_h: i32, min: f64, max: f64) -> Self {
+        Self {
+            x: panel_x + 40,
+            y: panel_y + 35,
+            w: panel_w - 50,
+            h: panel_h - 55,
+            min,
+            max: if max > min { max } else { min + 1.0 },
+        }
+    }
+
+    fn range(&self) -> f64 {
+        self.max - self.min
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y + self.h
+    }
+
+    /// Horizontal position of sample `i` of `n`.
+    fn px(&self, i: usize, n: usize) -> i32 {
+        self.x + (self.w * i as i32) / n.saturating_sub(1).max(1) as i32
+    }
+
+    /// Vertical position of `value` (higher values sit nearer the top).
+    fn py(&self, value: f64) -> i32 {
+        self.bottom() - ((value - self.min) / self.range() * self.h as f64) as i32
+    }
+
+    /// Height of `value` as a percentage measured from the bottom of the
+    /// frame — the coordinate space SVG gradient stops use.
+    fn pct(&self, value: f64) -> f64 {
+        ((value - self.min) / self.range() * 100.0).clamp(0.0, 100.0)
+    }
+
+    fn polyline(&self, points: &[DataPoint]) -> String {
+        let mut path = String::new();
+        for (i, point) in points.iter().enumerate() {
+            let cmd = if i == 0 { "M" } else { " L" };
+            path.push_str(&format!(
+                "{} {} {}",
+                cmd,
+                self.px(i, points.len()),
+                self.py(point.value)
+            ));
+        }
+        path
+    }
+
+    fn axis_labels(&self, offset: i32, format: impl Fn(f64) -> String) -> String {
+        svg_common::axis_minmax_labels(
+            (self.x - offset) as f64,
+            (self.y + 5) as f64,
+            self.bottom() as f64,
+            &format(self.max),
+            &format(self.min),
+        )
+    }
+
+    fn threshold_line(&self, value: f64, color: &str) -> String {
+        format!(
+            r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="2" stroke-dasharray="8,4"/>"#,
+            self.x,
+            self.py(value),
+            self.x + self.w,
+            self.py(value),
+            color
+        )
+    }
+}
+
+/// Min and max value of a series. Callers early-return on empty input, so the
+/// fallbacks are unreachable in practice.
+fn data_bounds(points: &[DataPoint]) -> (f64, f64) {
+    let min = points
+        .iter()
+        .map(|p| p.value)
+        .min_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    let max = points
+        .iter()
+        .map(|p| p.value)
+        .max_by(f64::total_cmp)
+        .unwrap_or(1.0);
+    (min, max)
+}
+
+/// A vertical gradient (0% = bottom of the frame, 100% = top) wrapped in its
+/// own `<defs>` block. Stop offsets come from `ChartFrame::pct` so the colour
+/// bands line up with the values they represent.
+fn gradient_def(id: &str, stops: &[(f64, &str)]) -> String {
+    let mut out = format!(
+        r#"<defs><linearGradient id="{}" x1="0%" y1="100%" x2="0%" y2="0%">"#,
+        id
+    );
+    for (offset, color) in stops {
+        out.push_str(&format!(
+            r#"<stop offset="{}%" style="stop-color:{};stop-opacity:1" />"#,
+            offset, color
+        ));
+    }
+    out.push_str(r#"</linearGradient></defs>"#);
+    out
+}
+
+/// Filled area under the series, plus min/max axis labels.
+fn draw_area_series(svg: &mut String, points: &[DataPoint], frame: &ChartFrame, fill: &str) {
+    if points.is_empty() {
         return;
     }
 
-    let min_val = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .min_by(|a, b| a.total_cmp(b))
-        .unwrap_or(0.0);
-    let max_val = series
-        .points
-        .iter()
-        .map(|p| p.value)
-        .max_by(|a, b| a.total_cmp(b))
-        .unwrap_or(100.0);
-    let range = if max_val > min_val {
-        max_val - min_val
-    } else {
-        1.0
-    };
-
-    // Chart area
-    let chart_x = x + 40;
-    let chart_y = y + 35;
-    let chart_w = width - 50;
-    let chart_h = height - 55;
-
-    // Build area path (line + filled area below)
-    let num_points = series.points.len();
-    if num_points > 0 {
-        let mut path = String::new();
-
-        // Start at bottom-left
-        let first_x = chart_x;
-        path.push_str(&format!("M {} {}", first_x, chart_y + chart_h));
-
-        // Draw line along data points
-        for (i, point) in series.points.iter().enumerate() {
-            let px = chart_x + (chart_w * i as i32) / (num_points - 1).max(1) as i32;
-            let py = if invert_y {
-                chart_y + ((point.value - min_val) / range * chart_h as f64) as i32
-            } else {
-                chart_y + chart_h - ((point.value - min_val) / range * chart_h as f64) as i32
-            };
-            path.push_str(&format!(" L {} {}", px, py));
-        }
-
-        // Close path at bottom-right
-        let last_x = chart_x + chart_w;
-        path.push_str(&format!(" L {} {} Z", last_x, chart_y + chart_h));
-
-        // Draw filled area with transparency
-        svg.push_str(&format!(
-            r#"<path d="{}" fill="{}" fill-opacity="0.3" stroke="black" stroke-width="1"/>"#,
-            path, color
+    let mut path = format!("M {} {}", frame.x, frame.bottom());
+    for (i, point) in points.iter().enumerate() {
+        path.push_str(&format!(
+            " L {} {}",
+            frame.px(i, points.len()),
+            frame.py(point.value)
         ));
-
-        // Draw threshold line if provided (e.g., VIX panic level at 15)
-        if let Some(threshold_val) = threshold {
-            if threshold_val >= min_val && threshold_val <= max_val {
-                let threshold_y = if invert_y {
-                    chart_y + ((threshold_val - min_val) / range * chart_h as f64) as i32
-                } else {
-                    chart_y + chart_h - ((threshold_val - min_val) / range * chart_h as f64) as i32
-                };
-                svg.push_str(&format!(
-                    r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="darkred" stroke-width="1" stroke-dasharray="4,2"/>"#,
-                    chart_x, threshold_y, chart_x + chart_w, threshold_y
-                ));
-            }
-        }
     }
+    path.push_str(&format!(" L {} {} Z", frame.x + frame.w, frame.bottom()));
 
-    // Y-axis labels (min and max) - swap if inverted
-    let (top_label, bottom_label) = if invert_y {
-        (min_val, max_val)
-    } else {
-        (max_val, min_val)
-    };
-    svg.push_str(&svg_common::axis_minmax_labels(
-        (chart_x - 5) as f64,
-        (chart_y + 5) as f64,
-        (chart_y + chart_h) as f64,
-        &format!("{:.1}", top_label),
-        &format!("{:.1}", bottom_label),
+    svg.push_str(&format!(
+        r#"<path d="{}" fill="{}" fill-opacity="0.3" stroke="black" stroke-width="1"/>"#,
+        path, fill
     ));
+    svg.push_str(&frame.axis_labels(5, |v| format!("{:.1}", v)));
 }

@@ -2,6 +2,32 @@
 //! These modules otherwise duplicated this markup (battery indicator, axis labels)
 //! nearly verbatim in half a dozen places.
 
+/// Escapes text for use as SVG character data.
+///
+/// Anything interpolated into a `<text>` element must go through this — an
+/// unescaped `&` makes the whole document fail to parse, which surfaces as a
+/// blank render rather than an obvious error.
+pub fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The "Last updated: HH:MM:SS" footer stamp, in the server's local time.
+pub fn last_updated_text(x: f64, y: f64, anchor: &str) -> String {
+    use chrono::{Local, Timelike};
+    let now = Local::now();
+    format!(
+        r#"<text x="{}" y="{}" text-anchor="{}" font-size="12" fill="black">Last updated: {:02}:{:02}:{:02}</text>"#,
+        x,
+        y,
+        anchor,
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
+}
+
 /// `<linearGradient>` definition for the battery bar fill (red at 0% -> green at 100%).
 /// Callers must emit this once inside their `<defs>` block before calling `battery_bar_svg`.
 pub const BATTERY_GRADIENT_DEF: &str = r#"<linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" style="stop-color:red;stop-opacity:1" /><stop offset="100%" style="stop-color:green;stop-opacity:1" /></linearGradient>"#;

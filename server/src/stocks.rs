@@ -1,46 +1,23 @@
 use crate::svg_common;
 use serde::Deserialize;
 
-// Twelve Data API response structures
-#[allow(dead_code)]
+// Twelve Data API response. Fields we do not plot are simply not declared;
+// serde ignores the rest of the payload.
 #[derive(Debug, Deserialize)]
 pub struct TwelveDataResponse {
-    pub meta: TwelveDataMeta,
     pub values: Vec<TwelveDataValue>,
-    pub status: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct TwelveDataMeta {
-    pub symbol: String,
-    pub interval: String,
-    #[serde(default)]
-    pub currency: Option<String>,
-    #[serde(default)]
-    pub currency_base: Option<String>,
-    #[serde(default)]
-    pub currency_quote: Option<String>,
-    #[serde(default)]
-    pub exchange_timezone: Option<String>,
-    pub exchange: String,
-    #[serde(rename = "type")]
-    pub instrument_type: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TwelveDataValue {
-    pub datetime: String,
     pub open: String,
     pub high: String,
     pub low: String,
     pub close: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct StockPoint {
-    pub date: String,
     pub open: f64,
     pub high: f64,
     pub low: f64,
@@ -68,7 +45,6 @@ fn parse_twelve_data(data: TwelveDataResponse) -> Vec<StockPoint> {
             let low = value.low.parse::<f64>().ok()?;
             let close = value.close.parse::<f64>().ok()?;
             Some(StockPoint {
-                date: value.datetime.clone(),
                 open,
                 high,
                 low,
@@ -97,11 +73,6 @@ pub async fn fetch_stocks(
             symbol, api_key
         );
         let text = client.get(&url).send().await?.text().await?;
-        eprintln!(
-            "{} API Response (first 500 chars): {}",
-            symbol,
-            &text.chars().take(500).collect::<String>()
-        );
 
         let response: TwelveDataResponse = serde_json::from_str(&text).map_err(|e| {
             format!(
@@ -171,19 +142,7 @@ pub fn generate_stocks_svg(stocks: &StocksData, battery_pct: Option<u8>) -> Stri
     // Footer with last updated and battery bar
     let footer_y = height - 10;
 
-    // Last updated timestamp (PST/PDT)
-    use chrono::{Local, Timelike};
-    let now = Local::now();
-    let timestamp = format!(
-        "Last updated: {:02}:{:02}:{:02}",
-        now.hour(),
-        now.minute(),
-        now.second()
-    );
-    svg.push_str(&format!(
-        r#"<text x="10" y="{}" font-size="12" fill="black">{}</text>"#,
-        footer_y, timestamp
-    ));
+    svg.push_str(&svg_common::last_updated_text(10.0, footer_y as f64, "start"));
 
     // Battery bar (if provided)
     let pct = battery_pct.unwrap_or(50);
@@ -236,7 +195,7 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
             r#"<text x="{}" y="{}" text-anchor="middle" font-size="18" font-weight="bold" fill="black">{}</text>"#,
             x + width / 2,
             y + 20,
-            stock.symbol
+            svg_common::escape_xml(&stock.symbol)
         ));
 
         // Change amount and percentage (top right)
@@ -255,7 +214,7 @@ fn generate_chart_svg(stock: &StockData, x: i32, y: i32, width: i32, height: i32
             r#"<text x="{}" y="{}" text-anchor="middle" font-size="18" font-weight="bold" fill="black">{}</text>"#,
             x + width / 2,
             y + 20,
-            stock.symbol
+            svg_common::escape_xml(&stock.symbol)
         ));
     }
 

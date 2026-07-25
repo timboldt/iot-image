@@ -17,6 +17,7 @@ use fred::{fetch_fred, generate_fred_svg};
 use reverse_geocoder::ReverseGeocoder;
 use serde::Deserialize;
 use std::fmt::Display;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -81,6 +82,19 @@ struct QueryArgs {
 const DISPLAY_WIDTH: u16 = 800;
 const DISPLAY_HEIGHT: u16 = 480;
 
+/// Filename the client requests for the raw bitmap form of every endpoint.
+const BITMAP_SUFFIX: &str = "seed-e1002.bin";
+
+/// Every endpoint is served at both `/<base>/seed-e1002.bin` and `/<base>/svg`.
+const ENDPOINT_BASES: [&str; 6] = [
+    "weather",
+    "weather-overview",
+    "stocks",
+    "fred",
+    "weight/forecast",
+    "weight/velocity",
+];
+
 fn render_svg_bytes(svg_content: String) -> Vec<u8> {
     let bitmap =
         match bitmap::render_svg_to_bitmap(svg_content.as_bytes(), DISPLAY_WIDTH, DISPLAY_HEIGHT) {
@@ -94,8 +108,8 @@ fn render_svg_bytes(svg_content: String) -> Vec<u8> {
     bitmap.to_bytes()
 }
 
-fn fallback_bitmap_bytes(error_context: &str, e: impl Display) -> Vec<u8> {
-    eprintln!("Error {}: {}", error_context, e);
+fn fallback_bitmap_bytes(error: &str) -> Vec<u8> {
+    eprintln!("Error {}", error);
     bitmap::generate_test_bitmap(DISPLAY_WIDTH, DISPLAY_HEIGHT).to_bytes()
 }
 
@@ -124,246 +138,146 @@ fn weather_coordinates<'a>(state: &'a AppState, query: &'a QueryArgs) -> (&'a st
     )
 }
 
-async fn get_weather_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
+/// The SVG for one endpoint, or a message describing why it could not be built.
+type SvgResult = Result<String, String>;
+
+fn bitmap_response(svg: SvgResult) -> impl IntoResponse {
+    let bytes = match svg {
+        Ok(svg) => render_svg_bytes(svg),
+        Err(e) => fallback_bitmap_bytes(&e),
+    };
+    ([("Content-Type", "application/octet-stream")], bytes)
+}
+
+fn svg_response(svg: SvgResult) -> impl IntoResponse {
+    let body = match svg {
+        Ok(svg) => svg,
+        Err(e) => error_svg(e),
+    };
+    ([("Content-Type", "image/svg+xml")], body)
+}
+
+/// Registers the `.bin` and `/svg` variants of one endpoint, which differ only
+/// in how the same SVG is encoded for the response.
+fn register<F, Fut>(router: Router<Arc<AppState>>, base: &str, producer: F) -> Router<Arc<AppState>>
+where
+    F: Fn(Arc<AppState>, QueryArgs) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = SvgResult> + Send,
+{
+    let for_bitmap = producer.clone();
+    router
+        .route(
+            &format!("/{}/{}", base, BITMAP_SUFFIX),
+            get(
+                move |State(state): State<Arc<AppState>>, Query(query): Query<QueryArgs>| {
+                    let producer = for_bitmap.clone();
+                    async move { bitmap_response(producer(state, query).await) }
+                },
+            ),
+        )
+        .route(
+            &format!("/{}/svg", base),
+            get(
+                move |State(state): State<Arc<AppState>>, Query(query): Query<QueryArgs>| {
+                    let producer = producer.clone();
+                    async move { svg_response(producer(state, query).await) }
+                },
+            ),
+        )
+}
+
+async fn weather_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
     let (lat, lon) = weather_coordinates(&state, &query);
-    let bitmap = match fetch_weather(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(generate_weather_svg(
-            &weather,
-            query.battery_pct,
-            &state.geocoder,
-        )),
-        Err(e) => fallback_bitmap_bytes("fetching weather", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
+    fetch_weather(lat, lon, &state.api_key)
+        .await
+        .map(|weather| generate_weather_svg(&weather, query.battery_pct, &state.geocoder))
+        .map_err(|e| format!("fetching weather: {}", e))
 }
 
-async fn get_stocks_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let bitmap = match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
-        Ok(stocks) => render_svg_bytes(generate_stocks_svg(&stocks, query.battery_pct)),
-        Err(e) => fallback_bitmap_bytes("fetching stocks", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
-}
-
-async fn get_weather_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
+async fn weather_overview_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
     let (lat, lon) = weather_coordinates(&state, &query);
-    match fetch_weather(lat, lon, &state.api_key).await {
-        Ok(weather) => {
-            let svg_content = generate_weather_svg(&weather, query.battery_pct, &state.geocoder);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
+    fetch_weather_overview(lat, lon, &state.api_key)
+        .await
+        .map(|weather| {
+            generate_weather_overview_svg(&weather, query.battery_pct, &state.geocoder)
+        })
+        .map_err(|e| format!("fetching weather overview: {}", e))
 }
 
-async fn get_weather_overview_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let (lat, lon) = weather_coordinates(&state, &query);
-    let bitmap = match fetch_weather_overview(lat, lon, &state.api_key).await {
-        Ok(weather) => render_svg_bytes(generate_weather_overview_svg(
-            &weather,
-            query.battery_pct,
-            &state.geocoder,
-        )),
-        Err(e) => fallback_bitmap_bytes("fetching weather overview", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
+async fn stocks_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
+    fetch_stocks(&state.stocks_api_key, &state.stock_symbols)
+        .await
+        .map(|stocks| generate_stocks_svg(&stocks, query.battery_pct))
+        .map_err(|e| format!("fetching stocks: {}", e))
 }
 
-async fn get_weather_overview_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let (lat, lon) = weather_coordinates(&state, &query);
-    match fetch_weather_overview(lat, lon, &state.api_key).await {
-        Ok(weather) => {
-            let svg_content =
-                generate_weather_overview_svg(&weather, query.battery_pct, &state.geocoder);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
+async fn fred_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
+    fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration)
+        .await
+        .map(|fred| generate_fred_svg(&fred, query.battery_pct))
+        .map_err(|e| format!("fetching FRED data: {}", e))
 }
 
-async fn get_stocks_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    match fetch_stocks(&state.stocks_api_key, &state.stock_symbols).await {
-        Ok(stocks) => {
-            let svg_content = generate_stocks_svg(&stocks, query.battery_pct);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
+async fn weight_forecast_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
+    let csv_path = weight_csv_path(&state, query.user.as_deref())?;
+    fetch_weight_data(Path::new(&csv_path))
+        .await
+        .map(|data| generate_forecast_svg(&data, query.battery_pct))
+        .map_err(|e| format!("fetching weight data: {}", e))
 }
 
-async fn get_fred_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let bitmap = match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await
-    {
-        Ok(fred) => render_svg_bytes(generate_fred_svg(&fred, query.battery_pct)),
-        Err(e) => fallback_bitmap_bytes("fetching FRED data", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
-}
-
-async fn get_fred_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    match fetch_fred(&state.fred_api_key, query.date.as_deref(), query.duration).await {
-        Ok(fred) => {
-            let svg_content = generate_fred_svg(&fred, query.battery_pct);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
-}
-
-async fn get_weight_forecast_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                [("Content-Type", "application/octet-stream")],
-                fallback_bitmap_bytes("invalid user parameter", e),
-            )
-        }
-    };
-    let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => render_svg_bytes(generate_forecast_svg(&data, query.battery_pct)),
-        Err(e) => fallback_bitmap_bytes("fetching weight data", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
-}
-
-async fn get_weight_forecast_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
-        Ok(p) => p,
-        Err(e) => return ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    };
-    match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => {
-            let svg_content = generate_forecast_svg(&data, query.battery_pct);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
-}
-
-async fn get_weight_velocity_bitmap(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                [("Content-Type", "application/octet-stream")],
-                fallback_bitmap_bytes("invalid user parameter", e),
-            )
-        }
-    };
-    let bitmap = match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => render_svg_bytes(generate_velocity_svg(&data, query.battery_pct)),
-        Err(e) => fallback_bitmap_bytes("fetching weight data", e),
-    };
-
-    ([("Content-Type", "application/octet-stream")], bitmap)
-}
-
-async fn get_weight_velocity_svg(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<QueryArgs>,
-) -> impl IntoResponse {
-    let csv_path = match weight_csv_path(&state, query.user.as_deref()) {
-        Ok(p) => p,
-        Err(e) => return ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    };
-    match fetch_weight_data(Path::new(&csv_path)).await {
-        Ok(data) => {
-            let svg_content = generate_velocity_svg(&data, query.battery_pct);
-            ([("Content-Type", "image/svg+xml")], svg_content)
-        }
-        Err(e) => ([("Content-Type", "image/svg+xml")], error_svg(e)),
-    }
+async fn weight_velocity_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
+    let csv_path = weight_csv_path(&state, query.user.as_deref())?;
+    fetch_weight_data(Path::new(&csv_path))
+        .await
+        .map(|data| generate_velocity_svg(&data, query.battery_pct))
+        .map_err(|e| format!("fetching weight data: {}", e))
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
-    // HTTP server mode
     println!("\n=== iot-image Server Starting ===");
     println!("Serving e-ink bitmaps on port {}", args.port);
-    println!(
-        "Endpoints:\n  Binary (EPBM):\n    - http://localhost:{}/weather/seed-e1002.bin\n    - http://localhost:{}/weather-overview/seed-e1002.bin\n    - http://localhost:{}/stocks/seed-e1002.bin\n    - http://localhost:{}/fred/seed-e1002.bin\n    - http://localhost:{}/weight/forecast/seed-e1002.bin\n    - http://localhost:{}/weight/velocity/seed-e1002.bin\n  SVG Preview:\n    - http://localhost:{}/weather/svg\n    - http://localhost:{}/weather-overview/svg\n    - http://localhost:{}/stocks/svg\n    - http://localhost:{}/fred/svg\n    - http://localhost:{}/weight/forecast/svg\n    - http://localhost:{}/weight/velocity/svg",
-        args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port, args.port
-    );
+    println!("Endpoints:");
+    println!("  Binary (EPBM):");
+    for base in ENDPOINT_BASES {
+        println!(
+            "    - http://localhost:{}/{}/{}",
+            args.port, base, BITMAP_SUFFIX
+        );
+    }
+    println!("  SVG Preview:");
+    for base in ENDPOINT_BASES {
+        println!("    - http://localhost:{}/{}/svg", args.port, base);
+    }
     println!("Format: Raw e-ink bitmap (EPBM)");
-    println!("Display: 800x480, 7 colors");
+    println!("Display: {}x{}, 6 colors", DISPLAY_WIDTH, DISPLAY_HEIGHT);
     println!("Weather location: ({}, {})\n", args.lat, args.lon);
 
+    let port = args.port;
     let state = Arc::new(AppState {
-        lat: args.lat.clone(),
-        lon: args.lon.clone(),
-        api_key: args.open_weather_key.clone(),
-        stocks_api_key: args.stocks_api_key.clone(),
-        stock_symbols: args.stock_symbols.clone(),
-        fred_api_key: args.fred_api_key.clone(),
-        weight_data_dir: args.weight_data_dir.clone(),
+        lat: args.lat,
+        lon: args.lon,
+        api_key: args.open_weather_key,
+        stocks_api_key: args.stocks_api_key,
+        stock_symbols: args.stock_symbols,
+        fred_api_key: args.fred_api_key,
+        weight_data_dir: args.weight_data_dir,
         geocoder: ReverseGeocoder::new(),
     });
 
-    let app = Router::new()
-        .route("/weather/seed-e1002.bin", get(get_weather_bitmap))
-        .route(
-            "/weather-overview/seed-e1002.bin",
-            get(get_weather_overview_bitmap),
-        )
-        .route("/stocks/seed-e1002.bin", get(get_stocks_bitmap))
-        .route("/fred/seed-e1002.bin", get(get_fred_bitmap))
-        .route(
-            "/weight/forecast/seed-e1002.bin",
-            get(get_weight_forecast_bitmap),
-        )
-        .route(
-            "/weight/velocity/seed-e1002.bin",
-            get(get_weight_velocity_bitmap),
-        )
-        .route("/weather/svg", get(get_weather_svg))
-        .route("/weather-overview/svg", get(get_weather_overview_svg))
-        .route("/stocks/svg", get(get_stocks_svg))
-        .route("/fred/svg", get(get_fred_svg))
-        .route("/weight/forecast/svg", get(get_weight_forecast_svg))
-        .route("/weight/velocity/svg", get(get_weight_velocity_svg))
-        .with_state(state);
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let mut app = Router::new();
+    app = register(app, "weather", weather_endpoint);
+    app = register(app, "weather-overview", weather_overview_endpoint);
+    app = register(app, "stocks", stocks_endpoint);
+    app = register(app, "fred", fred_endpoint);
+    app = register(app, "weight/forecast", weight_forecast_endpoint);
+    app = register(app, "weight/velocity", weight_velocity_endpoint);
+    let app = app.with_state(state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) => {
