@@ -92,17 +92,18 @@ The server generates raw bitmaps in the native EPBM format for maximum efficienc
 ## Code Structure
 
 ### `config.h`
-Configuration constants:
-- WiFi credentials
-- Server hostname/port
+Configuration constants (credentials live in `arduino_secrets.h`):
+- Server port; hostname comes from `SECRET_HOST`
 - Display pin assignments
 - Streaming buffer size
 - Scheduled wake-time configuration (`WAKE_HOUR_*`, fallback sleep)
 
 ### `client.ino`
 Main sketch with functions:
-- `setup()` - Initialize and run main loop
+- `setup()` - Runs the whole cycle; the device deep-sleeps rather than looping
 - `setup_wifi()` - Connect to WiFi with retries
+- `check_wake_reason()` - Advance the display mode if a button caused the wake
+- `calculate_sleep_duration()` - Seconds until the next scheduled wake hour
 - `download_and_render_image()` - Stream raw bitmap from server and render in one pass
 - `parse_bitmap_header()` - Validate EPBM header and extract dimensions
 - `map_epbm_color()` - Convert EPBM color values to GxEPD2 constants
@@ -132,18 +133,21 @@ Total active time: ~40-60 seconds, then sleep
 
 Serial output provides detailed status:
 ```
+[Wake] Woke up from timer
 [WiFi] Connecting to WiFi...
 [WiFi] Connected!
 [WiFi] IP address: 192.168.1.100
-[Download] Fetching: http://<server>:8080/weather/seed-e1002.bin
-[Download] HTTP response code: 200
-[Download] Content-Length: 384008 bytes
-[Download] Bitmap download complete
+[Battery] mV: 1975, Voltage: 3.95V, Percentage: 79%
+[Stream] Mode: WEATHER
+[Stream] Fetching: http://<server>:8080/weather/seed-e1002.bin?battery_pct=79
+[Stream] HTTP response code: 200
+[Stream] Content-Length: 384008 bytes
 [Bitmap] Header: 800x480
-[Render] Rendering bitmap to display...
-[Render] Rendered 384000 pixels in 25340 ms
-[Render] Display refresh complete
-[Sleep] Sleeping for 21600 seconds
+[Stream] Starting streaming render...
+[Stream] Progress: ..........
+[Stream] Rendered 384000 pixels, downloaded 384008 bytes in 25340 ms
+[Stream] Complete
+[Sleep] Next wake: 12:00:00 (18102 seconds / 5.03 hours)
 ```
 
 ## TODO
@@ -151,16 +155,18 @@ Serial output provides detailed status:
 - [x] Replace PNG format with native EPBM bitmap format
 - [x] Update display dimensions to 800x480
 - [x] Direct color mapping using GxEPD2 palette
-- [ ] Add fallback image cache (SPIFFS)
-- [ ] Implement WiFi reconnection on failure
-- [ ] Add battery monitoring (if supported by reTerminal)
+- [x] Battery monitoring, reported to the server as `battery_pct`
+- [x] Scheduled wake times and button-driven mode switching
+- [ ] Add fallback image cache (SPIFFS) — currently a failed fetch just draws
+      the red "stale data" border
+- [ ] Retry WiFi association instead of giving up after the 20 s timeout
 - [ ] OTA firmware updates
 - [ ] Optimize pixel rendering (use writeImage or buffer)
 
 ## Troubleshooting
 
 **Can't connect to WiFi?**
-- Check SSID/password in `config.h`
+- Check SSID/password in `arduino_secrets.h` (not `config.h`)
 - Verify ESP32-S3 antenna placement
 - Check WiFi signal strength with serial monitor
 

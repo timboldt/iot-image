@@ -3,6 +3,8 @@
 //! Generates raw bitmaps in the native format for GxEPD2 7-color displays
 //! Format: EPBM header + raw pixel data (1 byte per pixel)
 
+use std::sync::{Arc, OnceLock};
+
 /// Approximate RGB values for E Ink Spectra 6 pigments
 const PALETTE: [[u8; 3]; 6] = [
     [0, 0, 0],       // Black
@@ -120,16 +122,7 @@ pub fn generate_test_bitmap(width: u16, height: u16) -> EpdBitmap {
     bitmap
 }
 
-/// Generate weather display bitmap
-#[allow(dead_code)]
-pub fn generate_weather_bitmap(width: u16, height: u16, _weather_data: &str) -> EpdBitmap {
-    // For now, just generate a test pattern
-    // TODO: Integrate with weather data and render forecast
-    generate_test_bitmap(width, height)
-}
-
 /// Convert e-ink display color to approximate RGB values
-#[allow(dead_code)]
 fn epd_color_to_rgb(color: EpdColor) -> (u8, u8, u8) {
     let idx = color as usize;
     (PALETTE[idx][0], PALETTE[idx][1], PALETTE[idx][2])
@@ -328,20 +321,33 @@ fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
         .unwrap_or(EpdColor::White)
 }
 
+/// The shared system font database.
+///
+/// `load_system_fonts` parses every font installed on the machine, which used
+/// to run on every single render and dominated image generation time. The
+/// database is immutable once built, so one `Arc` is shared by all requests.
+fn font_database() -> Arc<usvg::fontdb::Database> {
+    static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+
+    FONTS
+        .get_or_init(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            db.set_sans_serif_family("DejaVu Sans");
+            db.set_serif_family("DejaVu Serif");
+            db.set_monospace_family("DejaVu Sans Mono");
+            println!("Loaded {} fonts from system", db.len());
+            Arc::new(db)
+        })
+        .clone()
+}
+
 /// Render SVG bytes to e-ink bitmap using Atkinson error diffusion dithering
 pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<EpdBitmap, String> {
-    // Parse SVG with font configuration
-    let mut opts = usvg::Options::default();
-
-    // Load system fonts
-    opts.fontdb_mut().load_system_fonts();
-
-    // Set generic font families as fallbacks
-    opts.fontdb_mut().set_sans_serif_family("DejaVu Sans");
-    opts.fontdb_mut().set_serif_family("DejaVu Serif");
-    opts.fontdb_mut().set_monospace_family("DejaVu Sans Mono");
-
-    println!("Loaded {} fonts from system", opts.fontdb_mut().len());
+    let opts = usvg::Options {
+        fontdb: font_database(),
+        ..usvg::Options::default()
+    };
 
     let tree = usvg::Tree::from_data(svg_data, &opts)
         .map_err(|e| format!("Failed to parse SVG: {}", e))?;
@@ -375,9 +381,6 @@ pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<
 
     // Create error buffer for Atkinson dithering (stores RGB error values)
     let mut errors = vec![vec![(0.0f32, 0.0f32, 0.0f32); width as usize]; height as usize];
-
-    // Track color usage for debugging
-    let mut color_counts = std::collections::HashMap::new();
 
     // Process pixels in raster order for error diffusion
     for y in 0..height {
@@ -418,29 +421,8 @@ pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<
                 }
             }
 
-            *color_counts.entry(color as u8).or_insert(0) += 1;
             bitmap.set_pixel(x, y, color);
         }
-    }
-
-    // Print color statistics
-    println!("Color usage in converted bitmap:");
-    for (color_val, count) in color_counts.iter() {
-        let color_name = match color_val {
-            0 => "Black",
-            1 => "White",
-            2 => "Green",
-            3 => "Blue",
-            4 => "Red",
-            5 => "Yellow",
-            _ => "Unknown",
-        };
-        println!(
-            "  {}: {} pixels ({:.2}%)",
-            color_name,
-            count,
-            (*count as f32 / (width as usize * height as usize) as f32) * 100.0
-        );
     }
 
     Ok(bitmap)

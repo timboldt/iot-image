@@ -49,8 +49,9 @@
 #define SD_MOSI_PIN 9  // Shared with display
 #define SD_SCK_PIN 7   // Shared with display
 
-// === Serial Port Configuration ===
-// reTerminal uses Serial1 with specific pins
+// === Serial Port Configuration (board reference) ===
+// The sketch logs over USB Serial; these are the reTerminal's Serial1 pins,
+// kept here as a hardware reference.
 #define SERIAL_RX 44
 #define SERIAL_TX 43
 #define SERIAL_BAUD 115200
@@ -64,9 +65,11 @@
 #define BATTERY_ENABLE_PIN 21  // GPIO21 - Battery monitoring enable
 
 // === Button Pins ===
-#define BUTTON_KEY0 3  // Right button (Green) - Wake & refresh current mode
-#define BUTTON_KEY1 4  // Middle button - Switch to Stocks
-#define BUTTON_KEY2 5  // Left button - Switch to Weather
+// Each button cycles within its own category; see client.ino.
+// Active-low, and any press wakes the device from deep sleep.
+#define BUTTON_KEY0 3  // Right button (Green) - Finance: Stocks <-> FRED
+#define BUTTON_KEY1 4  // Middle button - Weight: user1/user2 x velocity/forecast
+#define BUTTON_KEY2 5  // Left button - Weather: forecast <-> overview
 
 // EPBM streaming buffer size
 // Used for downloading and rendering chunks on-the-fly

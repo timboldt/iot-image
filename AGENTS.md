@@ -1,234 +1,175 @@
-# Claude Code Instructions for iot-image
+# Agent Instructions for iot-image
+
+Guidance for AI coding agents working in this repository. This is the single
+source of truth for how the project is built, run, and deployed.
 
 ## Project Overview
 
-`iot-image` is a service for generating images suitable for IoT devices with constrained resources. The system consists of two components:
-- **Server (Rust)** - Runs on local Linux machine, fetches weather data, generates optimized images
-- **Client (Arduino/ESP32-S3)** - Runs on Seed Studio reTerminal e1002, downloads and displays images on 7.3" e-ink display
+A server that renders dashboards for a battery-powered e-ink display, plus the
+firmware that shows them.
 
-The server downloads weather data from a public API, generates device-optimized images, and serves them via HTTP. The client periodically fetches the latest image and renders it to the e-ink display.
+- **Server (Rust / Axum)** — fetches data from external APIs, builds an SVG,
+  rasterises it, dithers it to the display's 6-colour palette, and serves the
+  result as a raw bitmap.
+- **Client (Arduino / ESP32-S3)** — a Seeed Studio reTerminal e1002 with a 7.3"
+  colour e-paper panel. Wakes on a schedule or a button press, streams the
+  bitmap, renders it, and returns to deep sleep.
 
-## Developer Workflows
+The server holds no database and caches nothing between requests: every request
+re-fetches upstream data and re-renders.
 
-### Rust Server - Build & Run (Local Development)
-```bash
-cd server
-cargo build        # Debug build
-cargo build --release  # Optimized build
-cargo run -- --lat="$OPEN_WEATHER_LAT" --lon="$OPEN_WEATHER_LON" --open-weather-key="$OPEN_WEATHER_KEY"
-```
-
-### Rust Server - Deployment
-**Build and deploy:**
-```bash
-cd server
-cargo build --release && ../deploy/deploy_server.sh
-# Binary installed to: ~/bin/iot-image-server
-# Service: systemctl --user status iot-image-server
-```
-
-**Manual run:**
-```bash
-~/bin/iot-image-server --lat="37.7749" --lon="-122.4194" --open-weather-key="YOUR_KEY"
-```
-
-### Arduino Client - Setup & Build (ESP32-S3 on reTerminal e1002)
-
-**Install Arduino CLI:**
-```bash
-# macOS
-brew install arduino-cli
-
-# Linux
-curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-```
-
-**Initialize Arduino CLI and add ESP32 board support:**
-```bash
-arduino-cli core install esp32:esp32
-```
-
-**Build and upload to device:**
-```bash
-cd client
-arduino-cli compile --verbose --fqbn esp32:esp32:esp32s3 .
-arduino-cli upload --verbose --fqbn esp32:esp32:esp32s3 --port /dev/cu.wchusbserial110
-arduino-cli monitor -p /dev/cu.wchusbserial110 -c baudrate=115200
-```
-
-**Monitor serial output:**
-```bash
-arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
-```
-
-## Architecture & Data Flow
-
-1. **Rust Server** fetches weather data from OpenWeatherMap API
-2. **Server** generates optimized images (PNG format) suitable for e-ink display
-3. **ESP32-S3 Client** periodically downloads images from server via HTTP
-4. **Client** renders images on 7.3" e-ink display using GxEPD2 library
-
-## Code Organization
+## Repository Layout
 
 ```
 iot-image/
-├── server/              # Rust backend service
-│   ├── src/
-│   │   ├── main.rs      # CLI orchestration & weather printing
-│   │   └── weather.rs   # OpenWeatherMap API integration
-│   └── Cargo.toml
-├── client/              # Arduino/ESP32-S3 frontend
-│   ├── client.ino       # Main sketch
-│   ├── config.h         # WiFi & server configuration
-│   └── arduino_secrets.h # WiFi credentials (not committed)
-└── .claude.md
+├── server/src/
+│   ├── main.rs        # CLI args, shared state, route registration
+│   ├── weather.rs     # OpenWeatherMap One Call 3.0 + forecast/overview SVGs
+│   ├── stocks.rs      # Twelve Data candlesticks + 2x2 chart grid SVG
+│   ├── fred.rs        # FRED series, yield-curve analysis + "crash monitor" SVG
+│   ├── weight.rs      # CSV weight data, projections + forecast/velocity SVGs
+│   ├── kalman.rs      # Shared constant-velocity Kalman filter
+│   ├── bitmap.rs      # SVG -> RGBA -> dithered EPBM bitmap
+│   └── svg_common.rs  # SVG snippets shared across the generators
+├── client/
+│   ├── client.ino     # Firmware: wake, fetch, stream-render, sleep
+│   ├── config.h       # Pins, wake schedule, timezone
+│   └── arduino_secrets.h  # WiFi + server host (git-ignored)
+├── deploy/            # systemd unit and deployment script
+├── assets/static/     # Weather icon sets (loaded at runtime; see gotcha below)
+└── data/              # Weight CSVs (git-ignored)
 ```
 
-## Rust Server - Architecture & Patterns
+## Build & Run
 
-### Code Structure (`server/src/`)
-- **`main.rs`** - CLI orchestration, weather data printing
-  - Uses `clap` derive macros for argument parsing: `--lat`, `--lon`, `--open-weather-key`
-  - Helper functions for weather categorization: `temperature_text()`, `humidity_text()`, `wind_text()`
-  - Prints 6-day forecast with temperatures, humidity, wind, sunrise/sunset times
-
-- **`weather.rs`** - OpenWeatherMap API integration
-  - Data structures: `WeatherData`, `CurrentWeather`, `DailyWeather`, `TempRange`, `Weather`
-  - `fetch_weather()` async function queries OpenWeatherMap 3.0 One Call API
-  - Includes all fields: temperature ranges (min/max/morn/day/night), humidity, wind_speed, sunrise/sunset, weather icons
-
-### Dependencies
-- `reqwest` (0.11) - HTTP client with JSON support
-- `tokio` (1.x) - Async runtime
-- `chrono` (0.4.38) - DateTime parsing and formatting
-- `clap` (4.4) - CLI argument parsing with derive macros
-- `serde` / `serde_json` - JSON serialization for API responses
-
-### Release Optimizations
-```toml
-[profile.release]
-lto = true              # Link-time optimization
-strip = true            # Strip debug symbols
-opt-level = "z"         # Optimize for size
+```bash
+cd server
+cargo build --release
+cargo clippy --all-targets     # expected to be warning-free
+cargo test
 ```
 
-## Arduino Client - Architecture & Patterns
+Running locally requires every API key, because all arguments are mandatory:
 
-### Hardware Target
-- **Device:** Seed Studio reTerminal e1002
-- **Processor:** ESP32-S3 (32-bit Xtensa dual-core, 240 MHz)
-- **Display:** 7.3-inch full-color e-paper display (GDEP073E01), 800x480 pixels, 8 colors (black, white, red, green, blue, yellow)
-- **Connectivity:** WiFi (2.4 GHz 802.11 b/g/n)
-
-### Code Structure (`client/`)
-- **`client.ino`** - Main Arduino sketch
-  - WiFi connection with SSID/password from `arduino_secrets.h`
-  - HTTP client to download PNG image from server into memory
-  - PNG decoding using PNGdec library (memory-based, not streaming)
-  - Display rendering via GxEPD2 library with custom color mapping
-  - Deep sleep mode between updates (saves power)
-
-- **`config.h`** - Configuration constants
-  - Server URL/IP and port
-  - Update interval (default: 6 hours / 21600 seconds)
-  - Display pin assignments for reTerminal e1002
-  - SD card and other peripheral pin definitions
-
-- **`arduino_secrets.h`** - Credentials (git-ignored)
-  - `SECRET_SSID` - WiFi network name
-  - `SECRET_PASS` - WiFi password
-
-### Key Libraries
-- **WiFi** - Built-in ESP32 WiFi support
-- **HTTPClient** - Built-in HTTP request library
-- **GxEPD2** - E-ink display driver (GxEPD2_730c_GDEP073E01 for 7.3" color)
-
-### Important Implementation Details
-
-#### EPBM Bitmap Format
-- **Native format for e-ink displays**: Custom EPBM (E-Paper BitMap) format
-- **Header:** 8 bytes (magic "EPBM" + width + height as 16-bit big-endian)
-- **Pixel data:** 1 byte per pixel (direct color mapping to GxEPD2 palette)
-- **File size:** 384,008 bytes for 800×480 display
-- **Download:** Entire bitmap loaded into RAM (allocated dynamically)
-- **Rendering:** Direct pixel-by-pixel drawing with color lookup
-- **Memory:** Freed after rendering completes
-
-#### Color Mapping for E-ink
-The `map_epbm_color()` function converts EPBM values to GxEPD2 constants:
-- 0 → GxEPD_BLACK
-- 1 → GxEPD_WHITE
-- 2 → GxEPD_GREEN
-- 3 → GxEPD_BLUE
-- 4 → GxEPD_RED
-- 5 → GxEPD_YELLOW
-
-#### Power Management
-- Deep sleep between updates using `esp_deep_sleep_start()`
-- WiFi disconnected before sleep to save power
-- Update interval: 6 hours (21600 seconds)
-
-### Display Update Pattern
-```
-1. Connect to WiFi
-2. Download entire EPBM bitmap into memory buffer (malloc)
-3. Validate EPBM header and dimensions
-4. Render pixels directly to display using color lookup
-5. Refresh e-ink display (takes ~5-10 seconds)
-6. Free bitmap buffer
-7. Disconnect WiFi
-8. Enter deep sleep for 6 hours
-9. Wake and repeat
+```bash
+cargo run -- \
+  --lat=37.7749 --lon=-122.4194 \
+  --open-weather-key=KEY \
+  --stocks-api-key=KEY \
+  --stock-symbols="BTC/USD,QQQ,IONQ,TSLA" \
+  --fred-api-key=KEY \
+  --weight-data-dir=../data \
+  --port=8080
 ```
 
-## Integration Points
+**Gotcha:** weather icons are loaded from `assets/static/fill-svg-static/` at
+runtime, resolved *relative to the working directory*. Run the server from the
+repository root (or from the install directory, which has its own `assets/`
+copy), otherwise icons silently do not render — the code skips an icon it cannot
+read rather than failing the request.
 
-### Server → Client Communication
-- **Server exposes HTTP endpoint** to serve generated bitmap file
-  - Endpoint: `/` (configured in `config.h`)
-  - Returns binary EPBM data (384,008 bytes)
-  - Content-Type: application/octet-stream
+## Endpoints
 
-- **Client queries endpoint periodically**
-  - Request: `GET http://<server>:8080/weather/seed-e1002.bin`
-  - Downloads into memory buffer (384KB)
-  - Timeout: 30 seconds
-  - Validates EPBM header before rendering
+Every endpoint is served in two forms, registered together by `register()` in
+`main.rs`:
 
-### Environment & Configuration
-- **Server:** Environment variables or CLI args for `OPEN_WEATHER_LAT`, `OPEN_WEATHER_LON`, `OPEN_WEATHER_KEY`
-- **Client:**
-  - `config.h` for server URL, update interval, pin assignments
-  - `arduino_secrets.h` for WiFi credentials and server name (not committed to git)
-- Both handle network failures gracefully (timeouts, retries)
+- `/<base>/seed-e1002.bin` — EPBM bitmap for the device
+- `/<base>/svg` — the same SVG, for previewing in a browser
 
-## Testing & Validation
+with `<base>` one of: `weather`, `weather-overview`, `stocks`, `fred`,
+`weight/forecast`, `weight/velocity`.
 
-### Rust Server
-- Build: `cd server && cargo build --release`
-- Run locally: `cargo run -- --lat="37.7749" --lon="-122.4194" --open-weather-key="YOUR_KEY"`
-- Verify output: Check console for 6-day forecast with temperature categories, humidity, wind
+Query parameters: `battery_pct`, `lat`/`lon` (weather, overriding the defaults),
+`user` (weight, selects `<dir>/<user>.csv`), `date`/`duration` (FRED).
 
-### Arduino Client
-- Monitor serial: `arduino-cli monitor -p /dev/cu.wchusbserial110 -c baudrate=115200`
-- Expected output: WiFi connection status, HTTP download progress, bitmap validation, pixel rendering time, display refresh timing
-- Verify on device: Check if image appears on e-ink display after upload
+Failures never return an HTTP error. A `.bin` request falls back to the colour-bar
+test pattern; an `/svg` request returns an SVG containing the error text. This is
+deliberate: the device has no way to display an HTTP status.
 
-### End-to-End
-1. Start server: `cargo run -- --serve --port 8080`
-2. Upload client to ESP32-S3 with server IP in `config.h`
-3. Verify image appears on e-ink display within expected update interval
-4. Monitor serial output for any WiFi/HTTP/bitmap errors
+## Rendering Pipeline
 
-## Common Issues & Solutions
+1. A per-endpoint `async fn` returns `SvgResult` (`Result<String, String>`).
+2. `bitmap::render_svg_to_bitmap` parses the SVG with `usvg`, rasterises via
+   `resvg`/`tiny-skia` onto a white background.
+3. Each pixel is matched to the nearest palette entry in CIELAB space, after a
+   20% saturation boost that compensates for e-paper's muted pigments.
+4. Atkinson error diffusion spreads the quantisation error (6/8 of it; the rest
+   is absorbed, which keeps contrast crisp).
 
-### Bitmap Validation Errors
-- "Invalid magic number": EPBM header corrupted or wrong file format
-- "Dimension mismatch": Bitmap size doesn't match display (must be 800×480)
-- Solution: Verify server is generating correct EPBM format
+The system font database is expensive to build, so it is loaded once into a
+`OnceLock` and shared by every render. Do not move it back inside the render path.
 
-### Memory Allocation
-- ESP32-S3 has limited RAM (~300KB free for sketches)
-- EPBM bitmap requires exactly 384,008 bytes
-- Always free bitmap buffer after rendering: `free(bitmap_buffer)`
-- Check for memory fragmentation if allocation fails
+### EPBM format
+
+8-byte header — `"EPBM"` magic, then width and height as big-endian `u16` —
+followed by one byte per pixel. For 800x480 that is exactly 384,008 bytes. Byte
+values index the palette: 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow.
+
+## Chart Conventions (server)
+
+- `fred.rs` positions everything through `ChartFrame`, which owns the mapping
+  from data values to pixels. Curve, threshold lines, gradient stops and axis
+  labels must all go through the same frame — deriving a second scale is what
+  previously put the dashed threshold lines at the wrong height.
+- Ranges are padded so regime thresholds are always on screen, and those
+  thresholds are then always drawn.
+- `weather.rs` draws its meters with `GradientBar`; add new meters through it
+  rather than emitting the rect/clipPath/rect trio by hand.
+- SVG `clipPath` and gradient ids must be unique within a document. Charts that
+  can repeat build ids from their coordinates.
+
+## Client Behaviour
+
+- **Wake schedule:** 06:00, 12:00 and 18:00 local (`WAKE_HOUR_*` in `config.h`),
+  or any button press. Falls back to a 6-hour timer if NTP never syncs.
+- **Buttons** cycle within a category, and the mode persists across deep sleep in
+  `RTC_DATA_ATTR` memory:
+  - `BUTTON_KEY0` — finance: stocks <-> FRED
+  - `BUTTON_KEY1` — weight: user1/user2 x velocity/forecast
+  - `BUTTON_KEY2` — weather: forecast <-> overview
+- **Streaming:** the bitmap is *not* buffered whole. It is read in
+  `STREAM_BUFFER_SIZE` (8 KB) chunks and drawn pixel-by-pixel as it arrives,
+  because 384 KB will not fit alongside the framebuffer.
+- **Battery** is read from an ADC behind an enable pin and sent up as
+  `battery_pct` so the server can draw the gauge.
+- On any failure the client draws a red border as a "stale data" indicator.
+
+### Build & flash
+
+```bash
+cd client
+arduino-cli compile --fqbn esp32:esp32:esp32s3 .
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32s3 .
+arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
+```
+
+`deploy/flash_client.sh` chains all three.
+
+## Deployment
+
+The server runs as a **systemd system service** installed under
+`/opt/iot-image-server`:
+
+```bash
+cd server
+cargo build --release && ../deploy/deploy_server.sh
+```
+
+The script stops the service, copies the binary and `assets/` into
+`/opt/iot-image-server`, installs `deploy/bundle/iot-image-server.service`, then
+enables and starts it. Configuration lives in `/opt/iot-image-server/env.txt`
+(see `deploy/bundle/env.txt.example`); the unit expands those variables into
+command-line flags.
+
+```bash
+sudo systemctl status iot-image-server
+sudo journalctl -u iot-image-server -f
+```
+
+## Conventions
+
+- Keep `cargo clippy --all-targets` clean.
+- The SVG generators are pure functions of their input data, which is what makes
+  them testable — keep I/O in the `fetch_*` functions.
+- Avoid per-request logging in the render path; it lands in the journal on every
+  device wake and has no reader.

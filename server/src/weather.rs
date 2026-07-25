@@ -111,10 +111,6 @@ const RAIN_ICON_POP_CUTOFF: f32 = 0.25; // 25% chance of rain
 const RAIN_ICON_AMOUNT_CUTOFF: f32 = 2.54; // 0.1 inch in mm
 
 fn display_icon_for_daily_weather(icon_code: &str, pop: f32, rain: f32) -> &str {
-    println!(
-        "Determining icon for code {}, pop {}, rain {}",
-        icon_code, pop, rain
-    );
     if pop < RAIN_ICON_POP_CUTOFF || rain < RAIN_ICON_AMOUNT_CUTOFF {
         match icon_code {
             "09d" => "03d",
@@ -139,41 +135,92 @@ fn load_weather_icon_as_data_uri(icon_code: &str) -> Result<String, std::io::Err
     Ok(format!("data:image/svg+xml;base64,{}", encoded))
 }
 
-struct BarData {
-    fill_percent: f32, // 0.0 to 100.0
+/// Distance from the bar's outer edge to its fill, so the fill never covers
+/// the border.
+const BAR_INSET: f32 = 2.0;
+
+/// A rounded meter: white background with a black border, overlaid with a
+/// gradient that is clipped to the filled portion.
+///
+/// This markup — background rect, `clipPath`, gradient rect — was previously
+/// written out longhand at seven call sites in this file.
+struct GradientBar<'a> {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    gradient_id: &'a str,
+    /// Must be unique within the containing SVG document.
+    clip_id: &'a str,
+    inner_radius: u32,
 }
 
-fn temperature_bar(temp: f32) -> BarData {
-    // Map temperature range 32°F to 100°F to 0-100% fill
-    let lowest = 32.0;
-    let highest = 100.0;
-    let fill_percent = ((temp - lowest) / (highest - lowest) * 100.0).clamp(0.0, 100.0);
-    BarData { fill_percent }
+impl GradientBar<'_> {
+    /// `fill_offset` and `fill_width` are pixels measured from the inside edge
+    /// of the border, which lets the forecast rows fill a min..max span rather
+    /// than always starting at the left.
+    fn render(&self, fill_offset: f32, fill_width: f32) -> String {
+        let inner_x = self.x + BAR_INSET;
+        let inner_y = self.y + BAR_INSET;
+        let inner_h = self.height - BAR_INSET * 2.0;
+
+        format!(
+            concat!(
+                r#"  <rect x="{x}" y="{y}" width="{w}" height="{h}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
+                "\n",
+                r#"  <clipPath id="{clip}">"#,
+                "\n",
+                r#"    <rect x="{fill_x}" y="{inner_y}" width="{fill_w}" height="{inner_h}" rx="{radius}"/>"#,
+                "\n",
+                r#"  </clipPath>"#,
+                "\n",
+                r#"  <rect x="{inner_x}" y="{inner_y}" width="{inner_w}" height="{inner_h}" fill="url(#{gradient})" clip-path="url(#{clip})" rx="{radius}"/>"#,
+            ),
+            x = self.x,
+            y = self.y,
+            w = self.width,
+            h = self.height,
+            clip = self.clip_id,
+            fill_x = inner_x + fill_offset,
+            fill_w = fill_width,
+            inner_x = inner_x,
+            inner_y = inner_y,
+            inner_w = self.width - BAR_INSET * 2.0,
+            inner_h = inner_h,
+            radius = self.inner_radius,
+            gradient = self.gradient_id,
+        )
+    }
+
+    /// Fills from the left edge out to `pct` of the bar's inner width.
+    fn render_pct(&self, pct: f32) -> String {
+        let inner_w = self.width - BAR_INSET * 2.0;
+        self.render(0.0, inner_w * (pct / 100.0))
+    }
 }
 
-fn humidity_bar(humidity: i32, _temp: f32) -> BarData {
-    // Fill percent is directly proportional to humidity
-    let fill_percent = humidity.clamp(0, 100) as f32;
-    BarData { fill_percent }
+/// Each of these maps a reading onto a 0-100% bar fill.
+fn temperature_fill(temp: f32) -> f32 {
+    // 32°F to 100°F spans the bar.
+    ((temp - 32.0) / 68.0 * 100.0).clamp(0.0, 100.0)
 }
 
-fn wind_bar(wind_speed: f32) -> BarData {
-    // Map wind speed 0-60 mph to 0-100% fill
-    let fill_percent = (wind_speed / 60.0 * 100.0).clamp(0.0, 100.0);
-    BarData { fill_percent }
+fn humidity_fill(humidity: i32) -> f32 {
+    humidity.clamp(0, 100) as f32
 }
 
-fn cloudiness_bar(clouds: i32) -> BarData {
-    // Map cloudiness 0-100% directly to 0-100% fill
-    let fill_percent = clouds.clamp(0, 100) as f32;
-    BarData { fill_percent }
+fn wind_fill(wind_speed: f32) -> f32 {
+    // 0-60 mph spans the bar.
+    (wind_speed / 60.0 * 100.0).clamp(0.0, 100.0)
 }
 
-fn uvi_bar(uvi: f32) -> BarData {
-    // Map UVI 0-11+ to 0-100% fill
-    // Scale: 0-11 maps to 0-100%, clamped at 100%
-    let fill_percent = (uvi / 11.0 * 100.0).clamp(0.0, 100.0);
-    BarData { fill_percent }
+fn cloudiness_fill(clouds: i32) -> f32 {
+    clouds.clamp(0, 100) as f32
+}
+
+fn uvi_fill(uvi: f32) -> f32 {
+    // 0-11+ spans the bar.
+    (uvi / 11.0 * 100.0).clamp(0.0, 100.0)
 }
 
 /// Converts wind speed in mph to Beaufort scale (0-12)
@@ -274,12 +321,6 @@ fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-fn escape_xml_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 pub fn generate_weather_overview_svg(
     weather: &WeatherOverviewData,
     battery_pct: Option<u8>,
@@ -306,9 +347,9 @@ pub fn generate_weather_overview_svg(
     svg.push('\n');
     svg.push_str(&format!(
         r#"  <text x="20" y="62" font-family="Arial" font-size="16" fill="black">{}, {} ({})</text>"#,
-        escape_xml_text(&search_result.record.name),
-        escape_xml_text(&weather.date),
-        escape_xml_text(&weather.tz)
+        svg_common::escape_xml(&search_result.record.name),
+        svg_common::escape_xml(&weather.date),
+        svg_common::escape_xml(&weather.tz)
     ));
     svg.push('\n');
     svg.push_str(r#"  <line x1="20" y1="76" x2="780" y2="76" stroke="black" stroke-width="1"/>"#);
@@ -321,7 +362,7 @@ pub fn generate_weather_overview_svg(
         svg.push_str(&format!(
             r#"  <text x="30" y="{}" font-family="Arial" font-size="24" fill="black">{}</text>"#,
             y,
-            escape_xml_text(line)
+            svg_common::escape_xml(line)
         ));
         svg.push('\n');
         y += line_height;
@@ -348,18 +389,8 @@ pub fn generate_weather_overview_svg(
     ));
     svg.push('\n');
 
-    let now = Local::now();
-    let timestamp = format!(
-        "Last updated: {:02}:{:02}:{:02}",
-        now.hour(),
-        now.minute(),
-        now.second()
-    );
-    svg.push_str(&format!(
-        r#"  <text x="790" y="{}" text-anchor="end" font-size="12" fill="black">{}</text>"#,
-        footer_y,
-        escape_xml_text(&timestamp)
-    ));
+    svg.push_str("  ");
+    svg.push_str(&svg_common::last_updated_text(790.0, footer_y as f64, "end"));
     svg.push('\n');
 
     svg.push_str("</svg>");
@@ -493,7 +524,7 @@ pub fn generate_weather_svg(
     let search_result = geocoder.search(coords);
     svg.push_str(&format!(
         r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="black">{}</text>"#,
-        escape_xml_text(&search_result.record.name)
+        svg_common::escape_xml(&search_result.record.name)
     ));
     svg.push('\n');
 
@@ -521,41 +552,21 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let morn_bar = temperature_bar(today.feels_like.morn);
     let bar_width = 100.0;
     let bar_height = 20.0;
-    let bar_inset = 2.0; // Inset to avoid covering border
-    let fill_width = (bar_width - bar_inset * 2.0) * (morn_bar.fill_percent / 100.0);
+    let temp_bar = |x: f32, clip_id: &'static str| GradientBar {
+        x,
+        y: temp_y + 5.0,
+        width: bar_width,
+        height: bar_height,
+        gradient_id: "tempGradient",
+        clip_id,
+        inner_radius: 2,
+    };
 
-    // Background (container) rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="35" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        temp_y + 5.0, bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath for morning temp
-    svg.push_str(r#"  <clipPath id="mornTempClip">"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        35.0 + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#tempGradient)" clip-path="url(#mornTempClip)" rx="2"/>"#,
-        35.0 + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0
-    ));
+    svg.push_str(
+        &temp_bar(35.0, "mornTempClip").render_pct(temperature_fill(today.feels_like.morn)),
+    );
     svg.push('\n');
 
     // Day
@@ -566,38 +577,10 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let day_bar = temperature_bar(today.feels_like.day);
-    let fill_width = (bar_width - bar_inset * 2.0) * (day_bar.fill_percent / 100.0);
-
-    // Background (container) rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        35.0 + temp_spacing, temp_y + 5.0, bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath for day temp
-    svg.push_str(r#"  <clipPath id="dayTempClip">"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        35.0 + temp_spacing + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#tempGradient)" clip-path="url(#dayTempClip)" rx="2"/>"#,
-        35.0 + temp_spacing + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0
-    ));
+    svg.push_str(
+        &temp_bar(35.0 + temp_spacing, "dayTempClip")
+            .render_pct(temperature_fill(today.feels_like.day)),
+    );
     svg.push('\n');
 
     // Eve
@@ -608,38 +591,10 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let eve_bar = temperature_bar(today.feels_like.eve);
-    let fill_width = (bar_width - bar_inset * 2.0) * (eve_bar.fill_percent / 100.0);
-
-    // Background (container) rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        35.0 + 2.0 * temp_spacing, temp_y + 5.0, bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath for evening temp
-    svg.push_str(r#"  <clipPath id="eveTempClip">"#);
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        35.0 + 2.0 * temp_spacing + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#tempGradient)" clip-path="url(#eveTempClip)" rx="2"/>"#,
-        35.0 + 2.0 * temp_spacing + bar_inset,
-        temp_y + 5.0 + bar_inset,
-        bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0
-    ));
+    svg.push_str(
+        &temp_bar(35.0 + 2.0 * temp_spacing, "eveTempClip")
+            .render_pct(temperature_fill(today.feels_like.eve)),
+    );
     svg.push('\n');
 
     // Humidity and Wind in a row
@@ -651,41 +606,21 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let hum_bar = humidity_bar(today.humidity, today.temp.day);
     let hum_bar_width = 150.0;
-    let hum_fill_width = (hum_bar_width - bar_inset * 2.0) * (hum_bar.fill_percent / 100.0);
+    let detail_bar = |y: f32, gradient_id: &'static str, clip_id: &'static str| GradientBar {
+        x: 170.0,
+        y,
+        width: hum_bar_width,
+        height: bar_height,
+        gradient_id,
+        clip_id,
+        inner_radius: 2,
+    };
 
-    // Background rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        detail_y - 15.0, hum_bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // Create clipPath for this specific humidity bar
-    let hum_clip_id = "humClip";
-    svg.push_str(&format!(r#"  <clipPath id="{}">"#, hum_clip_id));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y - 15.0 + bar_inset,
-        hum_fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped to fill width
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#humidityGradient)" clip-path="url(#{})" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y - 15.0 + bar_inset,
-        hum_bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0,
-        hum_clip_id
-    ));
+    svg.push_str(
+        &detail_bar(detail_y - 15.0, "humidityGradient", "humClip")
+            .render_pct(humidity_fill(today.humidity)),
+    );
     svg.push('\n');
 
     svg.push_str(&format!(
@@ -694,40 +629,10 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let wind_bar = wind_bar(today.wind_gust.unwrap_or(today.wind_speed));
-    let wind_fill_width = (hum_bar_width - bar_inset * 2.0) * (wind_bar.fill_percent / 100.0);
-
-    // Background rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        detail_y + 20.0, hum_bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // Create clipPath for wind bar
-    let wind_clip_id = "windClip";
-    svg.push_str(&format!(r#"  <clipPath id="{}">"#, wind_clip_id));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 20.0 + bar_inset,
-        wind_fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Full-width gradient rect, clipped to fill width
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#windGradient)" clip-path="url(#{})" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 20.0 + bar_inset,
-        hum_bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0,
-        wind_clip_id
-    ));
+    svg.push_str(
+        &detail_bar(detail_y + 20.0, "windGradient", "windClip")
+            .render_pct(wind_fill(today.wind_gust.unwrap_or(today.wind_speed))),
+    );
     svg.push('\n');
 
     // Sunrise/sunset times (calculated once, used conditionally below)
@@ -751,41 +656,10 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let clouds_value = today.clouds.unwrap_or(0);
-    let clouds_bar = cloudiness_bar(clouds_value);
-    let clouds_fill_width = (hum_bar_width - bar_inset * 2.0) * (clouds_bar.fill_percent / 100.0);
-
-    // Background rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        detail_y + 55.0, hum_bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath
-    let clouds_clip_id = "cloudsClip";
-    svg.push_str(&format!(r#"  <clipPath id="{}">"#, clouds_clip_id));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 55.0 + bar_inset,
-        clouds_fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Gradient rect with clipping
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#cloudinessGradient)" clip-path="url(#{})" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 55.0 + bar_inset,
-        hum_bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0,
-        clouds_clip_id
-    ));
+    svg.push_str(
+        &detail_bar(detail_y + 55.0, "cloudinessGradient", "cloudsClip")
+            .render_pct(cloudiness_fill(today.clouds.unwrap_or(0))),
+    );
     svg.push('\n');
 
     // UVI bar
@@ -795,41 +669,10 @@ pub fn generate_weather_svg(
     ));
     svg.push('\n');
 
-    let uvi_value = today.uvi.unwrap_or(0.0);
-    let uvi_bar_data = uvi_bar(uvi_value);
-    let uvi_fill_width = (hum_bar_width - bar_inset * 2.0) * (uvi_bar_data.fill_percent / 100.0);
-
-    // Background rectangle
-    svg.push_str(&format!(
-        r#"  <rect x="170" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-        detail_y + 90.0, hum_bar_width, bar_height
-    ));
-    svg.push('\n');
-
-    // ClipPath
-    let uvi_clip_id = "uviClip";
-    svg.push_str(&format!(r#"  <clipPath id="{}">"#, uvi_clip_id));
-    svg.push('\n');
-    svg.push_str(&format!(
-        r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 90.0 + bar_inset,
-        uvi_fill_width,
-        bar_height - bar_inset * 2.0
-    ));
-    svg.push('\n');
-    svg.push_str(r#"  </clipPath>"#);
-    svg.push('\n');
-
-    // Gradient rect with clipping
-    svg.push_str(&format!(
-        r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#uviGradient)" clip-path="url(#{})" rx="2"/>"#,
-        170.0 + bar_inset,
-        detail_y + 90.0 + bar_inset,
-        hum_bar_width - bar_inset * 2.0,
-        bar_height - bar_inset * 2.0,
-        uvi_clip_id
-    ));
+    svg.push_str(
+        &detail_bar(detail_y + 90.0, "uviGradient", "uviClip")
+            .render_pct(uvi_fill(today.uvi.unwrap_or(0.0))),
+    );
     svg.push('\n');
 
     // Sunrise text (moved down)
@@ -902,7 +745,7 @@ pub fn generate_weather_svg(
             // Event name in bold red
             svg.push_str(&format!(
                 r#"  <text x="40" y="{}" font-family="Arial" font-size="16" font-weight="bold" fill="red">{}</text>"#,
-                alert_y, escape_xml_text(&alert.event)
+                alert_y, svg_common::escape_xml(&alert.event)
             ));
             svg.push('\n');
 
@@ -976,18 +819,16 @@ pub fn generate_weather_svg(
 
         // Temperature bar indicator
         // Calculate positions for min and max temperatures on the bar
-        let min_bar = temperature_bar(day.temp.min);
-        let max_bar = temperature_bar(day.temp.max);
+        let min_fill = temperature_fill(day.temp.min);
+        let max_fill = temperature_fill(day.temp.max);
         let forecast_bar_width = 125.0; // 5 pixels longer
         let forecast_bar_height = 16.0;
-        let forecast_inset = 2.0;
 
-        // Calculate the fill from min to max temperature
-        let available_width = forecast_bar_width - forecast_inset * 2.0;
-        let available_height = forecast_bar_height - forecast_inset * 2.0;
-        let mut fill_start_offset = available_width * (min_bar.fill_percent / 100.0);
-        let mut fill_width =
-            available_width * ((max_bar.fill_percent - min_bar.fill_percent) / 100.0);
+        // The fill spans min..max rather than starting at the left edge.
+        let available_width = forecast_bar_width - BAR_INSET * 2.0;
+        let available_height = forecast_bar_height - BAR_INSET * 2.0;
+        let mut fill_start_offset = available_width * (min_fill / 100.0);
+        let mut fill_width = available_width * ((max_fill - min_fill) / 100.0);
 
         // Ensure fill_width is at least as wide as it is tall (minimum square)
         if fill_width < available_height {
@@ -999,37 +840,18 @@ pub fn generate_weather_svg(
             fill_width = available_height;
         }
 
-        // Background rectangle (moved up 5 pixels: y + 25.0 instead of y + 30.0)
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="white" stroke="black" stroke-width="2" rx="3"/>"#,
-            right_x, y + 22.0, forecast_bar_width, forecast_bar_height
-        ));
-        svg.push('\n');
-
-        // ClipPath for this forecast day's temp bar (fill only from min to max)
-        let clip_id = format!("forecastTempClip{}", idx);
-        svg.push_str(&format!(r#"  <clipPath id="{}">"#, clip_id));
-        svg.push('\n');
-        svg.push_str(&format!(
-            r#"    <rect x="{}" y="{}" width="{}" height="{}" rx="1"/>"#,
-            right_x + forecast_inset + fill_start_offset,
-            y + 22.0 + forecast_inset,
-            fill_width,
-            forecast_bar_height - forecast_inset * 2.0
-        ));
-        svg.push('\n');
-        svg.push_str(r#"  </clipPath>"#);
-        svg.push('\n');
-
-        // Full-width gradient rect, clipped
-        svg.push_str(&format!(
-            r#"  <rect x="{}" y="{}" width="{}" height="{}" fill="url(#tempGradient)" clip-path="url(#{})" rx="1"/>"#,
-            right_x + forecast_inset,
-            y + 22.0 + forecast_inset,
-            forecast_bar_width - forecast_inset * 2.0,
-            forecast_bar_height - forecast_inset * 2.0,
-            clip_id
-        ));
+        svg.push_str(
+            &GradientBar {
+                x: right_x,
+                y: y + 22.0,
+                width: forecast_bar_width,
+                height: forecast_bar_height,
+                gradient_id: "tempGradient",
+                clip_id: &format!("forecastTempClip{}", idx),
+                inner_radius: 1,
+            }
+            .render(fill_start_offset, fill_width),
+        );
         svg.push('\n');
 
         // Wind indicator (Beaufort scale icon, color-coded by danger level)
@@ -1072,17 +894,8 @@ pub fn generate_weather_svg(
     svg.push('\n');
 
     // Last updated timestamp - now on the right
-    let now = Local::now();
-    let timestamp = format!(
-        "Last updated: {:02}:{:02}:{:02}",
-        now.hour(),
-        now.minute(),
-        now.second()
-    );
-    svg.push_str(&format!(
-        r#"  <text x="790" y="{}" text-anchor="end" font-size="12" fill="black">{}</text>"#,
-        footer_y, timestamp
-    ));
+    svg.push_str("  ");
+    svg.push_str(&svg_common::last_updated_text(790.0, footer_y as f64, "end"));
     svg.push('\n');
 
     svg.push_str("</svg>");
