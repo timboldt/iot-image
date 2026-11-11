@@ -108,10 +108,26 @@ fn map_weather_icon(icon_code: &str) -> &'static str {
 }
 
 const RAIN_ICON_POP_CUTOFF: f32 = 0.25; // 25% chance of rain
-const RAIN_ICON_AMOUNT_CUTOFF: f32 = 2.54; // 0.1 inch in mm
+const MM_PER_INCH: f32 = 25.4;
+const RAIN_ICON_AMOUNT_CUTOFF: f32 = 0.1 * MM_PER_INCH;
+
+/// Whether the forecast rain is likely and heavy enough to be worth showing.
+fn is_significant_rain(pop: f32, rain: f32) -> bool {
+    pop >= RAIN_ICON_POP_CUTOFF && rain >= RAIN_ICON_AMOUNT_CUTOFF
+}
+
+/// Rain amount at which the forecast rain bar is full.
+const RAIN_BAR_MAX_INCHES: f32 = 2.0;
+
+/// Rain bar fill percentage, shown only when the rain icon is.
+/// OpenWeatherMap reports `rain` in mm even in imperial units.
+fn rain_fill(pop: f32, rain: f32) -> Option<f32> {
+    is_significant_rain(pop, rain)
+        .then(|| (rain / MM_PER_INCH / RAIN_BAR_MAX_INCHES * 100.0).clamp(0.0, 100.0))
+}
 
 fn display_icon_for_daily_weather(icon_code: &str, pop: f32, rain: f32) -> &str {
-    if pop < RAIN_ICON_POP_CUTOFF || rain < RAIN_ICON_AMOUNT_CUTOFF {
+    if !is_significant_rain(pop, rain) {
         match icon_code {
             "09d" => "03d",
             "09n" => "03n",
@@ -496,6 +512,16 @@ pub fn generate_weather_svg(
     svg.push_str(r#"    </linearGradient>"#);
     svg.push('\n');
 
+    // Rain gradient: solid blue, so the forecast rain bar can reuse GradientBar
+    svg.push_str(r#"    <linearGradient id="rainGradient">"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="0%" style="stop-color:blue;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"      <stop offset="100%" style="stop-color:blue;stop-opacity:1" />"#);
+    svg.push('\n');
+    svg.push_str(r#"    </linearGradient>"#);
+    svg.push('\n');
+
     svg.push_str(r#"  </defs>"#);
     svg.push('\n');
 
@@ -798,7 +824,7 @@ pub fn generate_weather_svg(
         // Day name and date
         svg.push_str(&format!(
             r#"  <text x="{}" y="{}" font-family="Arial" font-size="22" font-weight="bold" fill="black">{}</text>"#,
-            right_x, y + 5.0, day_name
+            right_x, y + 12.0, day_name
         ));
         svg.push('\n');
 
@@ -854,6 +880,23 @@ pub fn generate_weather_svg(
         );
         svg.push('\n');
 
+        // Rain amount bar under the temperature bar, paired with the rain icon
+        if let Some(pct) = rain_fill(day.pop, day.rain) {
+            svg.push_str(
+                &GradientBar {
+                    x: right_x,
+                    y: y + 44.0,
+                    width: forecast_bar_width,
+                    height: forecast_bar_height / 2.0,
+                    gradient_id: "rainGradient",
+                    clip_id: &format!("forecastRainClip{}", idx),
+                    inner_radius: 1,
+                }
+                .render_pct(pct),
+            );
+            svg.push('\n');
+        }
+
         // Wind indicator (Beaufort scale icon, color-coded by danger level)
         let beaufort = wind_speed_to_beaufort(day.wind_gust.unwrap_or(day.wind_speed));
         if let Ok(beaufort_icon_uri) = load_beaufort_icon_as_data_uri(beaufort) {
@@ -904,7 +947,17 @@ pub fn generate_weather_svg(
 
 #[cfg(test)]
 mod tests {
-    use super::display_icon_for_daily_weather;
+    use super::{display_icon_for_daily_weather, rain_fill};
+
+    #[test]
+    fn rain_bar_scales_to_two_inches_and_matches_icon_cutoff() {
+        let close = |a: Option<f32>, b: f32| (a.unwrap() - b).abs() < 0.01;
+        assert!(close(rain_fill(0.25, 2.54), 5.0)); // 0.1"
+        assert!(close(rain_fill(0.80, 25.4), 50.0)); // 1"
+        assert!(close(rain_fill(0.80, 76.2), 100.0)); // 3" clamps to full
+        assert_eq!(rain_fill(0.24, 20.0), None);
+        assert_eq!(rain_fill(0.90, 2.53), None);
+    }
 
     #[test]
     fn low_pop_or_low_rain_rain_icons_are_replaced_with_clouds() {
