@@ -117,7 +117,7 @@ fn is_significant_rain(pop: f32, rain: f32) -> bool {
 }
 
 /// Rain amount at which the forecast rain bar is full.
-const RAIN_BAR_MAX_INCHES: f32 = 2.0;
+const RAIN_BAR_MAX_INCHES: f32 = 1.0;
 
 /// Rain bar fill percentage, shown only when the rain icon is.
 /// OpenWeatherMap reports `rain` in mm even in imperial units.
@@ -950,11 +950,11 @@ mod tests {
     use super::{display_icon_for_daily_weather, rain_fill};
 
     #[test]
-    fn rain_bar_scales_to_two_inches_and_matches_icon_cutoff() {
+    fn rain_bar_scales_to_one_inch_and_matches_icon_cutoff() {
         let close = |a: Option<f32>, b: f32| (a.unwrap() - b).abs() < 0.01;
-        assert!(close(rain_fill(0.25, 2.54), 5.0)); // 0.1"
-        assert!(close(rain_fill(0.80, 25.4), 50.0)); // 1"
-        assert!(close(rain_fill(0.80, 76.2), 100.0)); // 3" clamps to full
+        assert!(close(rain_fill(0.25, 2.54), 10.0)); // 0.1"
+        assert!(close(rain_fill(0.80, 12.7), 50.0)); // 0.5"
+        assert!(close(rain_fill(0.80, 50.8), 100.0)); // 2" clamps to full
         assert_eq!(rain_fill(0.24, 20.0), None);
         assert_eq!(rain_fill(0.90, 2.53), None);
     }
