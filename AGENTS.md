@@ -115,6 +115,10 @@ values index the palette: 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow.
   thresholds are then always drawn.
 - `weather.rs` draws its meters with `GradientBar`; add new meters through it
   rather than emitting the rect/clipPath/rect trio by hand.
+- The weather "today" panel is 24 hours of hourly sparklines positioned through
+  `SparkFrame`, which shares one time axis across rows. Colour rows with
+  `SparkFrame::smooth_gradient`, which anchors the gradient at its stop
+  values so an autoscaled row still colours a value as the meter bars do.
 - SVG `clipPath` and gradient ids must be unique within a document. Charts that
   can repeat build ids from their coordinates.
 

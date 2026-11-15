@@ -14,6 +14,8 @@ pub struct WeatherData {
     pub current: CurrentWeather,
     pub daily: Vec<DailyWeather>,
     #[serde(default)]
+    pub hourly: Vec<HourlyWeather>,
+    #[serde(default)]
     pub alerts: Vec<WeatherAlert>,
 }
 
@@ -60,6 +62,37 @@ pub struct DailyWeather {
     pub rain: f32,
     pub uvi: Option<f32>,
     pub clouds: Option<i32>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HourlyWeather {
+    pub dt: i64,
+    pub feels_like: f32,
+    pub wind_speed: f32,
+    pub wind_gust: Option<f32>,
+    #[serde(default)]
+    pub uvi: f32,
+    #[serde(default)]
+    pub pop: f32,
+    pub rain: Option<HourlyPrecip>,
+}
+
+/// Unlike the daily `rain` (a bare number), hourly rain is `{"1h": mm}` and is
+/// omitted entirely when no rain is forecast.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HourlyPrecip {
+    #[serde(rename = "1h", default)]
+    pub one_hour: f32,
+}
+
+impl HourlyWeather {
+    fn rain_mm(&self) -> f32 {
+        self.rain.as_ref().map_or(0.0, |r| r.one_hour)
+    }
+
+    fn gust(&self) -> f32 {
+        self.wind_gust.unwrap_or(self.wind_speed)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -221,22 +254,387 @@ fn temperature_fill(temp: f32) -> f32 {
     ((temp - 32.0) / 68.0 * 100.0).clamp(0.0, 100.0)
 }
 
-fn humidity_fill(humidity: i32) -> f32 {
-    humidity.clamp(0, 100) as f32
+/// Weather alerts listed under the today panel; more would reach the footer.
+const MAX_ALERTS: usize = 3;
+
+/// Hours of hourly forecast covered by the today panel's sparklines.
+const SPARK_HOURS: usize = 24;
+
+/// Hourly rain rate at which the rain column is full, unless the peak is higher.
+const SPARK_RAIN_MAX_MM: f32 = 0.1 * MM_PER_INCH;
+
+/// Maps hourly samples onto one sparkline row. Every row is built over the
+/// same `start..end` span so the rows line up; each has its own value range.
+struct SparkFrame {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    start: i64,
+    end: i64,
+    min: f32,
+    max: f32,
 }
 
-fn wind_fill(wind_speed: f32) -> f32 {
-    // 0-60 mph spans the bar.
-    (wind_speed / 60.0 * 100.0).clamp(0.0, 100.0)
+impl SparkFrame {
+    fn tx(&self, t: i64) -> f32 {
+        let span = (self.end - self.start).max(1) as f32;
+        self.x + self.w * ((t - self.start) as f32 / span).clamp(0.0, 1.0)
+    }
+
+    fn vy(&self, v: f32) -> f32 {
+        self.bottom() - self.h * self.frac(v)
+    }
+
+    fn frac(&self, v: f32) -> f32 {
+        let range = (self.max - self.min).max(f32::EPSILON);
+        ((v - self.min) / range).clamp(0.0, 1.0)
+    }
+
+    fn bottom(&self) -> f32 {
+        self.y + self.h
+    }
+
+    fn line_path(&self, points: &[(i64, f32)]) -> String {
+        let mut path = String::new();
+        for (i, &(t, v)) in points.iter().enumerate() {
+            let cmd = if i == 0 { "M" } else { " L" };
+            path.push_str(&format!("{} {:.1} {:.1}", cmd, self.tx(t), self.vy(v)));
+        }
+        path
+    }
+
+    fn area_path(&self, points: &[(i64, f32)]) -> String {
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return String::new();
+        };
+        format!(
+            "M {:.1} {:.1} {} L {:.1} {:.1} Z",
+            self.tx(first.0),
+            self.bottom(),
+            self.line_path(points).replacen('M', "L", 1),
+            self.tx(last.0),
+            self.bottom()
+        )
+    }
+
+    /// A vertical gradient that blends smoothly between `stops`, ascending
+    /// `(value, colour)` pairs, so a line or area is coloured by its value
+    /// exactly as the matching meter bar would be. The gradient is anchored at
+    /// the stop values themselves, which may lie outside this frame's range,
+    /// so an autoscaled row still gives a value the same colour as the bar did.
+    fn smooth_gradient(&self, id: &str, stops: &[(f32, &str)]) -> String {
+        let (Some(&(lo, _)), Some(&(hi, _))) = (stops.first(), stops.last()) else {
+            return String::new();
+        };
+        let range = (self.max - self.min).max(f32::EPSILON);
+        let y_at = |v: f32| self.bottom() - self.h * (v - self.min) / range;
+        let span = (hi - lo).max(f32::EPSILON);
+        let stops: String = stops
+            .iter()
+            .map(|&(v, color)| {
+                format!(
+                    r#"<stop offset="{:.1}%" style="stop-color:{};stop-opacity:1"/>"#,
+                    (v - lo) / span * 100.0,
+                    color
+                )
+            })
+            .collect();
+        format!(
+            r#"  <defs><linearGradient id="{}" gradientUnits="userSpaceOnUse" x1="0" y1="{:.1}" x2="0" y2="{:.1}">{}</linearGradient></defs>"#,
+            id,
+            y_at(lo),
+            y_at(hi),
+            stops
+        )
+    }
+
+    fn baseline(&self) -> String {
+        format!(
+            r#"  <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="black" stroke-width="1"/>"#,
+            self.x,
+            self.bottom(),
+            self.x + self.w,
+            self.bottom()
+        )
+    }
 }
 
-fn cloudiness_fill(clouds: i32) -> f32 {
-    clouds.clamp(0, 100) as f32
+/// The parts of `start..end` outside every `(sunrise, sunset)` interval.
+fn night_spans(start: i64, end: i64, days: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut days = days.to_vec();
+    days.sort_unstable();
+    let mut spans = Vec::new();
+    let mut cursor = start;
+    for (rise, set) in days {
+        if rise > cursor {
+            let night_end = rise.min(end);
+            if night_end > cursor {
+                spans.push((cursor, night_end));
+            }
+        }
+        cursor = cursor.max(set);
+    }
+    if cursor < end {
+        spans.push((cursor, end));
+    }
+    spans
 }
 
-fn uvi_fill(uvi: f32) -> f32 {
-    // 0-11+ spans the bar.
-    (uvi / 11.0 * 100.0).clamp(0.0, 100.0)
+/// Value range for the feels-like row: the data's range, widened to at least
+/// 20°F so an ordinary day doesn't look dramatic, plus a little headroom.
+fn temperature_spark_range(lo: f32, hi: f32) -> (f32, f32) {
+    let mid = (lo + hi) / 2.0;
+    let half = ((hi - lo) / 2.0).max(10.0) + 2.0;
+    (mid - half, mid + half)
+}
+
+/// "6a", "12p", ... for the sparkline time axis.
+fn short_hour(hour: u32) -> String {
+    let (h, suffix) = match hour {
+        0 => (12, "a"),
+        1..=11 => (hour, "a"),
+        12 => (12, "p"),
+        _ => (hour - 12, "p"),
+    };
+    format!("{}{}", h, suffix)
+}
+
+/// The next 24 hours as four stacked sparklines (feels-like, rain, wind, UV)
+/// on a shared time axis, with night shaded. Occupies the left panel between
+/// `top` (the time-axis labels) and `bottom`; the rows share the height in
+/// fixed proportions.
+fn render_hourly_sparklines(
+    svg: &mut String,
+    hourly: &[HourlyWeather],
+    daily: &[DailyWeather],
+    tz: &chrono::FixedOffset,
+    top: f32,
+    bottom: f32,
+) {
+    let hours = &hourly[..hourly.len().min(SPARK_HOURS + 1)];
+    let (Some(first), Some(last)) = (hours.first(), hours.last()) else {
+        svg.push_str(&format!(
+            r#"  <text x="40" y="{}" font-family="Arial" font-size="18" fill="black">Hourly forecast unavailable</text>"#,
+            top + 40.0
+        ));
+        svg.push('\n');
+        return;
+    };
+    if hours.len() < 2 {
+        return;
+    }
+    let (start, end) = (first.dt, last.dt);
+
+    let label_x = 20.0;
+    let chart_x = 110.0;
+    let chart_w = 260.0;
+    let value_x = 465.0;
+    let frame = |y: f32, h: f32, min: f32, max: f32| SparkFrame {
+        x: chart_x,
+        y,
+        w: chart_w,
+        h,
+        start,
+        end,
+        min,
+        max,
+    };
+
+    // Rows: (top, height). Temperature gets the most room because it is the
+    // one most people look at; rain is next because it has two series.
+    let axis_y = top;
+    let gap = 14.0;
+    let weights = [80.0, 60.0, 50.0, 45.0];
+    let scale = (bottom - top - 10.0 - gap * 3.0) / weights.iter().sum::<f32>();
+    let temp_row = (top + 10.0, weights[0] * scale);
+    let rain_row = (temp_row.0 + temp_row.1 + gap, weights[1] * scale);
+    let wind_row = (rain_row.0 + rain_row.1 + gap, weights[2] * scale);
+    let uv_row = (wind_row.0 + wind_row.1 + gap, weights[3] * scale);
+    let rows_top = temp_row.0;
+    let rows_bottom = uv_row.0 + uv_row.1;
+
+    // Night shading: a sparse dot pattern, which stays on-palette when dithered.
+    let axis = frame(rows_top, rows_bottom - rows_top, 0.0, 1.0);
+    svg.push_str(r#"  <defs><pattern id="nightDots" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1" height="1" fill="black"/></pattern></defs>"#);
+    svg.push('\n');
+    let days: Vec<(i64, i64)> = daily.iter().map(|d| (d.sunrise, d.sunset)).collect();
+    for (a, b) in night_spans(start, end, &days) {
+        svg.push_str(&format!(
+            r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="url(#nightDots)"/>"#,
+            axis.tx(a),
+            rows_top,
+            axis.tx(b) - axis.tx(a),
+            rows_bottom - rows_top
+        ));
+        svg.push('\n');
+    }
+
+    // Time axis: "Now" at the left, then every 6 hours (which lines up with
+    // the device's wake schedule).
+    svg.push_str(&format!(
+        r#"  <text x="{}" y="{}" font-family="Arial" font-size="13" fill="black">Now</text>"#,
+        chart_x, axis_y
+    ));
+    svg.push('\n');
+    for hour in hours.iter().skip(1) {
+        let local = Utc
+            .timestamp_opt(hour.dt, 0)
+            .single()
+            .unwrap_or_else(Utc::now)
+            .with_timezone(tz);
+        if local.hour() % 6 != 0 {
+            continue;
+        }
+        let x = axis.tx(hour.dt);
+        // Too close to the left edge its label would run into "Now", and an
+        // unlabelled gridline reads as a "Now" marker, so skip both.
+        if x - chart_x <= 45.0 {
+            continue;
+        }
+        svg.push_str(&format!(
+            r#"  <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="black" stroke-width="1" stroke-dasharray="2,3"/>"#,
+            x, rows_top, x, rows_bottom
+        ));
+        svg.push('\n');
+        svg.push_str(&format!(
+            r#"  <text x="{:.1}" y="{}" text-anchor="middle" font-family="Arial" font-size="13" fill="black">{}</text>"#,
+            x,
+            axis_y,
+            short_hour(local.hour())
+        ));
+        svg.push('\n');
+    }
+
+    let row_text = |svg: &mut String, (y, h): (f32, f32), label: &str, value: &str| {
+        svg.push_str(&format!(
+            r#"  <text x="{}" y="{:.1}" font-family="Arial" font-size="18" fill="black">{}</text>"#,
+            label_x,
+            y + h / 2.0 + 6.0,
+            label
+        ));
+        svg.push('\n');
+        // A value may span several lines (split on '\n'), centred on the row,
+        // so that long values stay clear of the chart.
+        let lines: Vec<&str> = value.lines().collect();
+        let first_y = y + h / 2.0 + 6.0 - 9.0 * lines.len().saturating_sub(1) as f32;
+        for (i, line) in lines.iter().enumerate() {
+            svg.push_str(&format!(
+                r#"  <text x="{}" y="{:.1}" text-anchor="end" font-family="Arial" font-size="16" font-weight="bold" fill="black">{}</text>"#,
+                value_x,
+                first_y + 18.0 * i as f32,
+                svg_common::escape_xml(line)
+            ));
+            svg.push('\n');
+        }
+    };
+
+    // Feels-like temperature: autoscaled (see temperature_spark_range), with
+    // the line coloured on an absolute scale so the colour still reads as
+    // cold / mild / hot.
+    let temps: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.feels_like)).collect();
+    let lo = temps.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    let hi = temps.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+    let (min, max) = temperature_spark_range(lo, hi);
+    let f = frame(temp_row.0, temp_row.1, min, max);
+    svg.push_str(&f.smooth_gradient("sparkTemp", &[(32.0, "blue"), (100.0, "red")]));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <path d="{}" fill="none" stroke="url(#sparkTemp)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>"#,
+        f.line_path(&temps)
+    ));
+    svg.push('\n');
+    row_text(
+        svg,
+        temp_row,
+        "Feels like",
+        &format!("{:.0}°/{:.0}°", hi, lo),
+    );
+
+    // Rain: one column per hour for the amount, and a thin line for the
+    // chance of rain (0-100% of the row height).
+    let peak_mm = hours.iter().map(|h| h.rain_mm()).fold(0.0, f32::max);
+    let f = frame(rain_row.0, rain_row.1, 0.0, SPARK_RAIN_MAX_MM.max(peak_mm));
+    for pair in hours.windows(2) {
+        let mm = pair[0].rain_mm();
+        if mm <= 0.0 {
+            continue;
+        }
+        let x0 = f.tx(pair[0].dt) + 1.0;
+        let x1 = f.tx(pair[1].dt) - 1.0;
+        let height = (f.bottom() - f.vy(mm)).max(2.0);
+        svg.push_str(&format!(
+            r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="blue"/>"#,
+            x0,
+            f.bottom() - height,
+            (x1 - x0).max(1.0),
+            height
+        ));
+        svg.push('\n');
+    }
+    let pops: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.pop)).collect();
+    let pop_frame = frame(rain_row.0, rain_row.1, 0.0, 1.0);
+    svg.push_str(&format!(
+        r#"  <path d="{}" fill="none" stroke="black" stroke-width="1.5" stroke-linejoin="round"/>"#,
+        pop_frame.line_path(&pops)
+    ));
+    svg.push('\n');
+    let total_in = hours[..hours.len() - 1]
+        .iter()
+        .map(|h| h.rain_mm())
+        .sum::<f32>()
+        / MM_PER_INCH;
+    let max_pop = hours.iter().map(|h| h.pop).fold(0.0, f32::max);
+    let rain_text = if total_in < 0.005 && max_pop < 0.1 {
+        "Dry".to_string()
+    } else {
+        format!("{:.2}\"\n{:.0}%", total_in, max_pop * 100.0)
+    };
+    row_text(svg, rain_row, "Rain", &rain_text);
+
+    // Wind gusts (falling back to sustained speed), 0-30 mph unless gustier.
+    let gusts: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.gust())).collect();
+    let peak_gust = gusts.iter().map(|p| p.1).fold(0.0, f32::max);
+    let f = frame(wind_row.0, wind_row.1, 0.0, peak_gust.max(30.0));
+    svg.push_str(&f.smooth_gradient(
+        "sparkWind",
+        &[(0.0, "green"), (30.0, "orange"), (60.0, "red")],
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <path d="{}" fill="none" stroke="url(#sparkWind)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>"#,
+        f.line_path(&gusts)
+    ));
+    svg.push('\n');
+    row_text(svg, wind_row, "Wind", &format!("{:.0} mph", peak_gust));
+
+    // UV index as a filled area, which carries colour better than a thin line.
+    // 0-8 unless higher, so a winter peak of 2-3 is still visible.
+    let uvs: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.uvi)).collect();
+    let peak_uv = uvs.iter().map(|p| p.1).fold(0.0, f32::max);
+    let f = frame(uv_row.0, uv_row.1, 0.0, peak_uv.max(8.0));
+    svg.push_str(&f.smooth_gradient(
+        "sparkUv",
+        &[
+            (0.0, "green"),
+            (2.97, "yellow"),
+            (5.94, "orange"),
+            (7.92, "red"),
+            (11.0, "purple"),
+        ],
+    ));
+    svg.push('\n');
+    svg.push_str(&format!(
+        r#"  <path d="{}" fill="url(#sparkUv)"/>"#,
+        f.area_path(&uvs)
+    ));
+    svg.push('\n');
+    row_text(svg, uv_row, "UV", &format!("{:.0}", peak_uv));
+
+    for (y, h) in [temp_row, rain_row, wind_row, uv_row] {
+        svg.push_str(&frame(y, h, 0.0, 1.0).baseline());
+        svg.push('\n');
+    }
 }
 
 /// Converts wind speed in mph to Beaufort scale (0-12)
@@ -282,7 +680,7 @@ pub async fn fetch_weather(
     key: &str,
 ) -> Result<WeatherData, Box<dyn std::error::Error>> {
     let url = format!(
-        "https://api.openweathermap.org/data/3.0/onecall?lat={}&lon={}&units=imperial&exclude=minutely,hourly&appid={}",
+        "https://api.openweathermap.org/data/3.0/onecall?lat={}&lon={}&units=imperial&exclude=minutely&appid={}",
         lat, lon, key
     );
 
@@ -456,60 +854,8 @@ pub fn generate_weather_svg(
     svg.push_str(r#"    </linearGradient>"#);
     svg.push('\n');
 
-    // Humidity gradient: red(extreme) -> orange (dry) -> blue (humid).
-    svg.push_str(r#"    <linearGradient id="humidityGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="20%" style="stop-color:orange;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:blue;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
-    svg.push('\n');
-
     // Battery gradient: red (low) -> green (full)
     svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
-    svg.push('\n');
-
-    // Wind gradient: green (calm) -> orange (windy) -> red (dangerous)
-    svg.push_str(r#"    <linearGradient id="windGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="50%" style="stop-color:orange;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
-    svg.push('\n');
-
-    // Cloudiness gradient: blue (clear) -> black (overcast)
-    svg.push_str(
-        r#"    <linearGradient id="cloudinessGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#,
-    );
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:lightblue;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:black;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
-    svg.push('\n');
-
-    // UVI gradient: green (low) -> yellow (moderate) -> orange (high) -> red (very high) -> purple (extreme)
-    svg.push_str(r#"    <linearGradient id="uviGradient" x1="0%" y1="0%" x2="100%" y2="0%">"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="0%" style="stop-color:green;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="27%" style="stop-color:yellow;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="54%" style="stop-color:orange;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="72%" style="stop-color:red;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"      <stop offset="100%" style="stop-color:purple;stop-opacity:1" />"#);
-    svg.push('\n');
-    svg.push_str(r#"    </linearGradient>"#);
     svg.push('\n');
 
     // Rain gradient: solid blue, so the forecast rain bar can reuse GradientBar
@@ -567,99 +913,20 @@ pub fn generate_weather_svg(
         }
     }
 
-    // Morning/Day/Eve temperatures in a row
-    let temp_y = 120.0;
-    let temp_spacing = 140.0;
-
-    // Morning
-    svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="18" fill="black">Morning</text>"#,
-        temp_y - 10.0
-    ));
-    svg.push('\n');
-
-    let bar_width = 100.0;
-    let bar_height = 20.0;
-    let temp_bar = |x: f32, clip_id: &'static str| GradientBar {
-        x,
-        y: temp_y + 5.0,
-        width: bar_width,
-        height: bar_height,
-        gradient_id: "tempGradient",
-        clip_id,
-        inner_radius: 2,
-    };
-
-    svg.push_str(
-        &temp_bar(35.0, "mornTempClip").render_pct(temperature_fill(today.feels_like.morn)),
+    // Next 24 hours as sparklines, replacing the old Morning/Day/Evening
+    // temperatures and the humidity/wind/cloudiness/UV meters.
+    // The charts grow into whatever room the alerts leave free; alerts past
+    // MAX_ALERTS would run into the footer, so they are not shown.
+    let shown_alerts = weather.alerts.len().min(MAX_ALERTS);
+    let charts_bottom = 400.0 - 18.0 * shown_alerts.saturating_sub(1) as f32;
+    render_hourly_sparklines(
+        &mut svg,
+        &weather.hourly,
+        &weather.daily,
+        &tz_offset,
+        100.0,
+        charts_bottom,
     );
-    svg.push('\n');
-
-    // Day
-    svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="black">Day</text>"#,
-        40.0 + temp_spacing,
-        temp_y - 10.0
-    ));
-    svg.push('\n');
-
-    svg.push_str(
-        &temp_bar(35.0 + temp_spacing, "dayTempClip")
-            .render_pct(temperature_fill(today.feels_like.day)),
-    );
-    svg.push('\n');
-
-    // Eve
-    svg.push_str(&format!(
-        r#"  <text x="{}" y="{}" font-family="Arial" font-size="18" fill="black">Evening</text>"#,
-        40.0 + 2.0 * temp_spacing,
-        temp_y - 10.0
-    ));
-    svg.push('\n');
-
-    svg.push_str(
-        &temp_bar(35.0 + 2.0 * temp_spacing, "eveTempClip")
-            .render_pct(temperature_fill(today.feels_like.eve)),
-    );
-    svg.push('\n');
-
-    // Humidity and Wind in a row
-    let detail_y = 200.0;
-
-    svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Humidity</text>"#,
-        detail_y
-    ));
-    svg.push('\n');
-
-    let hum_bar_width = 150.0;
-    let detail_bar = |y: f32, gradient_id: &'static str, clip_id: &'static str| GradientBar {
-        x: 170.0,
-        y,
-        width: hum_bar_width,
-        height: bar_height,
-        gradient_id,
-        clip_id,
-        inner_radius: 2,
-    };
-
-    svg.push_str(
-        &detail_bar(detail_y - 15.0, "humidityGradient", "humClip")
-            .render_pct(humidity_fill(today.humidity)),
-    );
-    svg.push('\n');
-
-    svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Wind</text>"#,
-        detail_y + 35.0
-    ));
-    svg.push('\n');
-
-    svg.push_str(
-        &detail_bar(detail_y + 20.0, "windGradient", "windClip")
-            .render_pct(wind_fill(today.wind_gust.unwrap_or(today.wind_speed))),
-    );
-    svg.push('\n');
 
     // Sunrise/sunset times (calculated once, used conditionally below)
     let sunrise_time = Utc
@@ -673,52 +940,24 @@ pub fn generate_weather_svg(
         .unwrap_or_else(Utc::now)
         .with_timezone(&tz_offset);
 
-    // Always show cloudiness/UVI/sunrise/sunset, plus warning titles if present
-
-    // Cloudiness bar
-    svg.push_str(&format!(
-            r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Cloudiness</text>"#,
-            detail_y + 70.0
-    ));
-    svg.push('\n');
-
-    svg.push_str(
-        &detail_bar(detail_y + 55.0, "cloudinessGradient", "cloudsClip")
-            .render_pct(cloudiness_fill(today.clouds.unwrap_or(0))),
-    );
-    svg.push('\n');
-
-    // UVI bar
-    svg.push_str(&format!(
-        r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">UV Index</text>"#,
-        detail_y + 105.0
-    ));
-    svg.push('\n');
-
-    svg.push_str(
-        &detail_bar(detail_y + 90.0, "uviGradient", "uviClip")
-            .render_pct(uvi_fill(today.uvi.unwrap_or(0.0))),
-    );
-    svg.push('\n');
-
     // Sunrise text (moved down)
     svg.push_str(&format!(
         r#"  <text x="40" y="{}" font-family="Arial" font-size="20" fill="black">Sunrise: {}</text>"#,
-        detail_y + 160.0, sunrise_time.format("%l:%M %P")
+        charts_bottom + 25.0, sunrise_time.format("%l:%M %P")
     ));
     svg.push('\n');
 
     // Sunset text (moved down)
     svg.push_str(&format!(
         r#"  <text x="280" y="{}" font-family="Arial" font-size="20" fill="black">Sunset: {}</text>"#,
-        detail_y + 160.0, sunset_time.format("%l:%M %P")
+        charts_bottom + 25.0, sunset_time.format("%l:%M %P")
     ));
     svg.push('\n');
 
     // Weather warning titles (if any)
     if !weather.alerts.is_empty() {
-        let mut alert_y = detail_y + 190.0;
-        for alert in &weather.alerts {
+        let mut alert_y = charts_bottom + 50.0;
+        for alert in weather.alerts.iter().take(MAX_ALERTS) {
             let (Some(start_utc), Some(end_utc)) = (
                 chrono::DateTime::from_timestamp(alert.start, 0),
                 chrono::DateTime::from_timestamp(alert.end, 0),
@@ -947,7 +1186,56 @@ pub fn generate_weather_svg(
 
 #[cfg(test)]
 mod tests {
-    use super::{display_icon_for_daily_weather, rain_fill};
+    use super::{
+        display_icon_for_daily_weather, night_spans, rain_fill, short_hour,
+        temperature_spark_range, SparkFrame,
+    };
+
+    #[test]
+    fn night_spans_are_the_gaps_between_daylight() {
+        // Window 0..100, daylight 20..50 and 80..130.
+        assert_eq!(
+            night_spans(0, 100, &[(80, 130), (20, 50)]),
+            vec![(0, 20), (50, 80)]
+        );
+        // Window entirely in daylight.
+        assert_eq!(night_spans(30, 40, &[(20, 50)]), vec![]);
+        // No daylight data: all night.
+        assert_eq!(night_spans(0, 10, &[]), vec![(0, 10)]);
+    }
+
+    #[test]
+    fn temperature_range_is_at_least_twenty_degrees() {
+        assert_eq!(temperature_spark_range(55.0, 60.0), (45.5, 69.5));
+        assert_eq!(temperature_spark_range(40.0, 80.0), (38.0, 82.0));
+    }
+
+    #[test]
+    fn short_hour_labels() {
+        let labels: Vec<String> = [0, 6, 12, 18].into_iter().map(short_hour).collect();
+        assert_eq!(labels, ["12a", "6a", "12p", "6p"]);
+    }
+
+    #[test]
+    fn smooth_gradient_is_anchored_at_the_stop_values() {
+        // Frame shows 40..80 over y 100..140; the gradient spans 32..100.
+        let frame = SparkFrame {
+            x: 0.0,
+            y: 100.0,
+            w: 50.0,
+            h: 40.0,
+            start: 0,
+            end: 1,
+            min: 40.0,
+            max: 80.0,
+        };
+        let g = frame.smooth_gradient("g", &[(32.0, "blue"), (66.0, "green"), (100.0, "red")]);
+        // 32 sits 8px below the frame, 100 sits 20px above it.
+        assert!(g.contains(r#"y1="148.0" x2="0" y2="80.0""#));
+        assert!(g.contains(r#"offset="50.0%" style="stop-color:green"#));
+        assert_eq!(frame.vy(50.0), 130.0);
+        assert_eq!(frame.vy(500.0), 100.0); // clamped to the top
+    }
 
     #[test]
     fn rain_bar_scales_to_one_inch_and_matches_icon_cutoff() {
