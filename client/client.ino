@@ -36,7 +36,6 @@ uint32_t calculate_sleep_duration();
 void deep_sleep();
 const char* get_mode_name(DisplayMode mode);
 DisplayMode next_finance_mode(DisplayMode mode);
-DisplayMode next_weight_mode(DisplayMode mode);
 DisplayMode next_weather_mode(DisplayMode mode);
 const char* endpoint_for_mode(DisplayMode mode);
 const char* user_for_mode(DisplayMode mode);
@@ -123,19 +122,6 @@ DisplayMode next_finance_mode(DisplayMode mode) {
 
 DisplayMode next_weather_mode(DisplayMode mode) {
     return mode == MODE_WEATHER ? MODE_WEATHER_OVERVIEW : MODE_WEATHER;
-}
-
-DisplayMode next_weight_mode(DisplayMode mode) {
-    switch (mode) {
-        case MODE_WEIGHT_USER1_VELOCITY:
-            return MODE_WEIGHT_USER1_FORECAST;
-        case MODE_WEIGHT_USER1_FORECAST:
-            return MODE_WEIGHT_USER2_VELOCITY;
-        case MODE_WEIGHT_USER2_VELOCITY:
-            return MODE_WEIGHT_USER2_FORECAST;
-        default:
-            return MODE_WEIGHT_USER1_VELOCITY;
-    }
 }
 
 const char* endpoint_for_mode(DisplayMode mode) {
@@ -262,8 +248,8 @@ bool sync_ntp_time() {
  * Buttons are active-low (LOW when pressed)
  */
 void setup_buttons() {
-    pinMode(BUTTON_KEY0, INPUT_PULLUP);  // Button 1 (Green - Finance: Stocks/FRED)
-    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Middle - Weight: Velocity/Forecast)
+    pinMode(BUTTON_KEY0, INPUT_PULLUP);  // Button 1 (Green, right - Refresh)
+    pinMode(BUTTON_KEY1, INPUT_PULLUP);  // Button 2 (Middle - Finance: Stocks/FRED)
     pinMode(BUTTON_KEY2, INPUT_PULLUP);  // Button 3 (Left - Weather)
 
     Serial.println("[Buttons] Initialized with pullups");
@@ -286,11 +272,11 @@ void check_wake_reason() {
 
             // Check which button triggered the wakeup
             if (wakeup_pin_mask & (1ULL << BUTTON_KEY0)) {
-                current_mode = next_finance_mode(current_mode);
-                Serial.printf("[Wake] Button 1 (Green) pressed - switching to %s\n",
+                // Leave the mode alone; waking is enough to re-fetch it.
+                Serial.printf("[Wake] Button 1 (Green) pressed - refreshing %s\n",
                               get_mode_name(current_mode));
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY1)) {
-                current_mode = next_weight_mode(current_mode);
+                current_mode = next_finance_mode(current_mode);
                 Serial.printf("[Wake] Button 2 (Middle) pressed - switching to %s\n",
                               get_mode_name(current_mode));
             } else if (wakeup_pin_mask & (1ULL << BUTTON_KEY2)) {

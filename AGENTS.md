@@ -126,11 +126,11 @@ values index the palette: 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow.
 
 - **Wake schedule:** 06:00, 12:00 and 18:00 local (`WAKE_HOUR_*` in `config.h`),
   or any button press. Falls back to a 6-hour timer if NTP never syncs.
-- **Buttons** cycle within a category, and the mode persists across deep sleep in
-  `RTC_DATA_ATTR` memory:
-  - `BUTTON_KEY0` — finance: stocks <-> FRED
-  - `BUTTON_KEY1` — weight: user1/user2 x velocity/forecast
-  - `BUTTON_KEY2` — weather: forecast <-> overview
+- **Buttons** — the mode persists across deep sleep in `RTC_DATA_ATTR` memory:
+  - `BUTTON_KEY2` (left) — weather: forecast <-> overview
+  - `BUTTON_KEY1` (middle) — finance: stocks <-> FRED
+  - `BUTTON_KEY0` (right, green) — refresh the current screen
+  The weight modes are still defined but no button selects them.
 - **Streaming:** the bitmap is *not* buffered whole. It is read in
   `STREAM_BUFFER_SIZE` (8 KB) chunks and drawn pixel-by-pixel as it arrives,
   because 384 KB will not fit alongside the framebuffer.
