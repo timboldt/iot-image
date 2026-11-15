@@ -65,10 +65,11 @@
 #define BATTERY_ENABLE_PIN 21  // GPIO21 - Battery monitoring enable
 
 // === Button Pins ===
-// Each button cycles within its own category; see client.ino.
+// The left and middle buttons cycle within a category; the right button
+// re-fetches whatever is on screen. See check_wake_reason() in client.ino.
 // Active-low, and any press wakes the device from deep sleep.
-#define BUTTON_KEY0 3  // Right button (Green) - Finance: Stocks <-> FRED
-#define BUTTON_KEY1 4  // Middle button - Weight: user1/user2 x velocity/forecast
+#define BUTTON_KEY0 3  // Right button (Green) - Refresh the current screen
+#define BUTTON_KEY1 4  // Middle button - Finance: Stocks <-> FRED
 #define BUTTON_KEY2 5  // Left button - Weather: forecast <-> overview
 
 // EPBM streaming buffer size
