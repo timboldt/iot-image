@@ -16,7 +16,7 @@
 #define TZ_INFO "PST8PDT,M3.2.0,M11.1.0"
 
 // Scheduled wake times (24-hour, local time), ascending.
-#define WAKE_HOURS {6}
+#define WAKE_HOURS {6, 18}
 
 // Sleep after a failed update (WiFi, HTTP or a bad image). The previous
 // image stays on screen meanwhile.

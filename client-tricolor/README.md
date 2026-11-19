@@ -2,7 +2,7 @@
 
 Arduino firmware for an Adafruit Feather ESP32-S2 with the 2.9" IL0373
 tri-colour eInk FeatherWing (296x128, white/black/red). It replaces the
-CircuitPython code in cp-tri-color. Once a day it fetches
+CircuitPython code in cp-tri-color. At 06:00 and 18:00 it fetches
 `/weather-mini/tricolor-296.bin` from the iot-image server, shows it, and deep-sleeps.
 
 Preview the screen in a browser at `http://<server>:8080/weather-mini/svg`.

@@ -16,7 +16,7 @@ firmware that shows them.
   bitmap, renders it, and returns to deep sleep.
 - **Tri-colour client (Arduino / ESP32-S2)** — an Adafruit Feather ESP32-S2 with
   a 2.9" IL0373 white/black/red FeatherWing (296x128). Shows a compact weather
-  screen (`weather-mini`) once a day.
+  screen (`weather-mini`) at 06:00 and 18:00.
 
 The server holds no database and caches nothing between requests: every request
 re-fetches upstream data and re-renders.
@@ -171,7 +171,7 @@ arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 
 ### Tri-colour client (`client-tricolor/`)
 
-Timer wake only (`WAKE_HOURS`, default 06:00), no buttons. It downloads and
+Timer wake only (`WAKE_HOURS`, default 06:00 and 18:00), no buttons. It downloads and
 validates the whole 37,896-byte bitmap *before* touching the panel, so on any
 failure the previous image stays up and it retries in an hour
 (`ERROR_RETRY_SEC`). The battery comes from the MAX17048 fuel gauge over I2C. At
