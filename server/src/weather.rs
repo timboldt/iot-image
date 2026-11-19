@@ -1197,6 +1197,13 @@ fn load_tricolor_icon_as_data_uri(icon_code: &str, size: u32) -> Result<String, 
     ))
 }
 
+/// Peak gust (mph) the tri-colour display flags in red.
+const MINI_GUST_ALERT_MPH: f32 = 30.0;
+
+/// Peak UV index the tri-colour display flags in red: the "high" band, where
+/// sun protection is recommended.
+const MINI_UV_ALERT: f32 = 6.0;
+
 /// Temperatures the tri-colour display flags in red.
 fn mini_temp_color(temp: f32) -> &'static str {
     if temp <= 32.0 || temp >= 90.0 {
@@ -1313,12 +1320,13 @@ pub fn generate_weather_mini_svg(
     );
     svg.push('\n');
 
-    // Today: icon, high, low, and the temperature now.
+    // Today: small icon beside the high, then the low; peak gust and UV follow
+    // once the hourly window is known.
     if let Some(w) = today.weather.first() {
         let code = display_icon_for_daily_weather(&w.icon, today.pop, today.rain);
-        if let Ok(uri) = load_tricolor_icon_as_data_uri(code, 70) {
+        if let Ok(uri) = load_tricolor_icon_as_data_uri(code, 20) {
             svg.push_str(&format!(
-                r#"  <image x="0" y="19" width="70" height="70" href="{}"/>"#,
+                r#"  <image x="1" y="22" width="20" height="20" href="{}"/>"#,
                 uri
             ));
             svg.push('\n');
@@ -1327,53 +1335,176 @@ pub fn generate_weather_mini_svg(
     let (hi, lo) = (today.temp.max, today.temp.min);
     mini_text(
         &mut svg,
-        73.0,
-        42.0,
-        22,
+        23.0,
+        40.0,
+        20,
         "start",
         mini_temp_color(hi),
         &format!("{:.0}°", hi),
     );
     mini_text(
         &mut svg,
-        73.0,
-        62.0,
+        23.0,
+        61.0,
         15,
         "start",
         mini_temp_color(lo),
         &format!("{:.0}°", lo),
     );
-    let now = weather.current.temp;
-    mini_text(
-        &mut svg,
-        73.0,
-        84.0,
-        11,
-        "start",
-        mini_temp_color(now),
-        &format!("Now {:.0}°", now),
-    );
 
-    // Next 24 hours: rain bars under a feels-like line, on one time axis.
+    // Next 24 hours: a feels-like row over a rain row, on one time axis.
+    // Every y below is on a half pixel: an unantialiased 1px line must sit on
+    // a pixel centre, or it renders as two grey pixels that snap to white.
+    const CHART_X: f32 = 66.0;
+    const CHART_W: f32 = 132.0;
+    const TEMP_TOP: f32 = 21.5;
+    const TEMP_H: f32 = 44.0;
+    const RAIN_TOP: f32 = 69.5;
+    const RAIN_H: f32 = 18.0;
+    /// Room above the feels-like line's peak and below its low for their
+    /// labels; the low's label also stays clear of the row's baseline.
+    const TEMP_LABEL_ROOM_ABOVE: f32 = 10.0;
+    const TEMP_LABEL_ROOM_BELOW: f32 = 13.0;
     let hours = &weather.hourly[..weather.hourly.len().min(SPARK_HOURS + 1)];
+
+    // Peaks over the same 24 hours as the chart, so they stay true until the
+    // next wake (unlike a "now" reading).
+    if !hours.is_empty() {
+        let gust = hours.iter().map(|h| h.gust()).fold(0.0, f32::max);
+        let uv = hours.iter().map(|h| h.uvi).fold(0.0, f32::max);
+        let gust_fill = if gust >= MINI_GUST_ALERT_MPH {
+            "red"
+        } else {
+            "black"
+        };
+        let uv_fill = if uv >= MINI_UV_ALERT { "red" } else { "black" };
+        mini_text(
+            &mut svg,
+            2.0,
+            82.0,
+            11,
+            "start",
+            gust_fill,
+            &format!("Gust {:.0}", gust),
+        );
+        mini_text(
+            &mut svg,
+            2.0,
+            98.0,
+            11,
+            "start",
+            uv_fill,
+            &format!("UV {:.0}", uv),
+        );
+    }
     match (hours.first(), hours.last()) {
         (Some(first), Some(last)) if hours.len() >= 2 => {
-            let frame = |min: f32, max: f32| SparkFrame {
-                x: 128.0,
-                // Half-pixel offset: an unantialiased 1px line must sit on a
-                // pixel centre, or it renders as two grey pixels that snap to
-                // white. This puts the baseline at 83.5.
-                y: 23.5,
-                w: 72.0,
-                h: 60.0,
+            let frame = |y: f32, h: f32, min: f32, max: f32| SparkFrame {
+                x: CHART_X,
+                y,
+                w: CHART_W,
+                h,
                 start: first.dt,
                 end: last.dt,
                 min,
                 max,
             };
+            let axis = frame(TEMP_TOP, RAIN_TOP + RAIN_H - TEMP_TOP, 0.0, 1.0);
+
+            // Night, behind the temperature row only: a sparse dot pattern,
+            // which stays crisp without dithering.
+            svg.push_str(r#"  <defs><pattern id="miniNight" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1" height="1" fill="black"/></pattern></defs>"#);
+            svg.push('\n');
+            let days: Vec<(i64, i64)> = weather
+                .daily
+                .iter()
+                .map(|d| (d.sunrise, d.sunset))
+                .collect();
+            for (a, b) in night_spans(first.dt, last.dt, &days) {
+                svg.push_str(&format!(
+                    r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="url(#miniNight)"/>"#,
+                    axis.tx(a),
+                    TEMP_TOP,
+                    axis.tx(b) - axis.tx(a),
+                    TEMP_H
+                ));
+                svg.push('\n');
+            }
+
+            // Ticks every 6 hours, labelled where they clear "Now" and each other.
+            mini_text(&mut svg, CHART_X, 99.0, 11, "start", "black", "Now");
+            let mut last_label_x = CHART_X + 12.0;
+            for hour in hours {
+                let at = local(hour.dt);
+                if at.hour() % 6 != 0 {
+                    continue;
+                }
+                let x = axis.tx(hour.dt).floor() + 0.5;
+                svg.push_str(&format!(
+                    r#"  <line x1="{x:.1}" y1="{:.0}" x2="{x:.1}" y2="{:.0}" stroke="black" stroke-width="1" stroke-dasharray="1,3"/>"#,
+                    // Whole-pixel ends, so each 1px dash fills one pixel.
+                    TEMP_TOP + 0.5,
+                    RAIN_TOP + RAIN_H + 2.5
+                ));
+                svg.push('\n');
+                if x - last_label_x >= 24.0 && x <= CHART_X + CHART_W - 8.0 {
+                    mini_text(
+                        &mut svg,
+                        x,
+                        99.0,
+                        11,
+                        "middle",
+                        "black",
+                        &short_hour(at.hour()),
+                    );
+                    last_label_x = x;
+                }
+            }
+
+            let temps: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.feels_like)).collect();
+            let t_lo = temps.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+            let t_hi = temps.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+            // The line fills the row minus label room top and bottom, so its
+            // peak and low can carry their values. At least 10°F tall, so an
+            // ordinary day doesn't look dramatic.
+            let mid = (t_lo + t_hi) / 2.0;
+            let half = ((t_hi - t_lo) / 2.0).max(5.0);
+            let temp = frame(
+                TEMP_TOP + TEMP_LABEL_ROOM_ABOVE,
+                TEMP_H - TEMP_LABEL_ROOM_ABOVE - TEMP_LABEL_ROOM_BELOW,
+                mid - half,
+                mid + half,
+            );
+            svg.push_str(&format!(
+                r#"  <path d="{}" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"/>"#,
+                temp.line_path(&temps)
+            ));
+            svg.push('\n');
+            let label = |svg: &mut String, &(t, v): &(i64, f32), dy: f32| {
+                let x = temp.tx(t).clamp(CHART_X + 10.0, CHART_X + CHART_W - 10.0);
+                // A white outline keeps the digits clear of night dots and the line.
+                svg.push_str(&format!(
+                    r#"  <text x="{:.1}" y="{:.1}" text-anchor="middle" font-family="DejaVu Sans" font-weight="bold" font-size="11" fill="{}" stroke="white" stroke-width="3" paint-order="stroke">{:.0}°</text>"#,
+                    x,
+                    temp.vy(v) + dy,
+                    mini_temp_color(v),
+                    v
+                ));
+                svg.push('\n');
+            };
+            let hottest = temps.iter().max_by(|a, b| a.1.total_cmp(&b.1));
+            let coldest = temps.iter().min_by(|a, b| a.1.total_cmp(&b.1));
+            if let (Some(hot), Some(cold)) = (hottest, coldest) {
+                label(&mut svg, hot, -3.0);
+                if cold.1.round() != hot.1.round() {
+                    label(&mut svg, cold, 10.0);
+                }
+            }
+            svg.push_str(&frame(TEMP_TOP, TEMP_H, 0.0, 1.0).baseline());
+            svg.push('\n');
 
             let peak_mm = hours.iter().map(|h| h.rain_mm()).fold(0.0, f32::max);
-            let rain = frame(0.0, SPARK_RAIN_MAX_MM.max(peak_mm));
+            let rain = frame(RAIN_TOP, RAIN_H, 0.0, SPARK_RAIN_MAX_MM.max(peak_mm));
             for pair in hours.windows(2) {
                 if !is_rainy_hour(&pair[0]) {
                     continue;
@@ -1389,49 +1520,12 @@ pub fn generate_weather_mini_svg(
                 ));
                 svg.push('\n');
             }
-
-            let temps: Vec<(i64, f32)> = hours.iter().map(|h| (h.dt, h.feels_like)).collect();
-            let t_lo = temps.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
-            let t_hi = temps.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
-            let (min, max) = temperature_spark_range(t_lo, t_hi);
-            let temp = frame(min, max);
-            svg.push_str(&format!(
-                r#"  <path d="{}" fill="none" stroke="black" stroke-width="2" stroke-linejoin="round"/>"#,
-                temp.line_path(&temps)
-            ));
+            svg.push_str(&rain.baseline());
             svg.push('\n');
-            svg.push_str(&temp.baseline());
-            svg.push('\n');
-
-            // Ticks every 6 hours; labels only where they will not collide.
-            let mut last_label_x = f32::NEG_INFINITY;
-            for hour in hours {
-                let at = local(hour.dt);
-                if at.hour() % 6 != 0 {
-                    continue;
-                }
-                let x = temp.tx(hour.dt).floor() + 0.5;
-                svg.push_str(&format!(
-                    r#"  <line x1="{x:.1}" y1="24" x2="{x:.1}" y2="87" stroke="black" stroke-width="1" stroke-dasharray="1,3"/>"#
-                ));
-                svg.push('\n');
-                if x - last_label_x >= 30.0 && (136.0..=192.0).contains(&x) {
-                    mini_text(
-                        &mut svg,
-                        x,
-                        98.0,
-                        11,
-                        "middle",
-                        "black",
-                        &short_hour(at.hour()),
-                    );
-                    last_label_x = x;
-                }
-            }
         }
         _ => mini_text(
             &mut svg,
-            164.0,
+            CHART_X + CHART_W / 2.0,
             56.0,
             11,
             "middle",
@@ -1642,6 +1736,9 @@ mod tests {
         let svg = generate_weather_mini_svg(&weather(dry, vec![]), Some(80), &geocoder);
         assert!(parses(&svg));
         assert!(svg.contains("Sunrise 7:00am"));
+        assert!(svg.contains(">Gust 5<"));
+        assert!(svg.contains(">UV 0<"));
+        assert!(!svg.contains("Now 55"));
         assert!(svg.contains(">80%<"));
 
         let wet: Vec<HourlyWeather> = (0..25)
