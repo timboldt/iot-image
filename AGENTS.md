@@ -14,6 +14,9 @@ firmware that shows them.
 - **Client (Arduino / ESP32-S3)** — a Seeed Studio reTerminal e1002 with a 7.3"
   colour e-paper panel. Wakes on a schedule or a button press, streams the
   bitmap, renders it, and returns to deep sleep.
+- **Tri-colour client (Arduino / ESP32-S2)** — an Adafruit Feather ESP32-S2 with
+  a 2.9" IL0373 white/black/red FeatherWing (296x128). Shows a compact weather
+  screen (`weather-mini`) at 06:00 and 18:00.
 
 The server holds no database and caches nothing between requests: every request
 re-fetches upstream data and re-renders.
@@ -35,8 +38,13 @@ iot-image/
 │   ├── client.ino     # Firmware: wake, fetch, stream-render, sleep
 │   ├── config.h       # Pins, wake schedule, timezone
 │   └── arduino_secrets.h  # WiFi + server host (git-ignored)
+├── client-tricolor/   # Same, for the 296x128 tri-colour Feather
+│   ├── client-tricolor.ino
+│   ├── config.h
+│   └── arduino_secrets.h  # git-ignored
 ├── deploy/            # systemd unit and deployment script
 ├── assets/static/     # Weather icon sets (loaded at runtime; see gotcha below)
+│                      #   tricolor/{20,70}px/ — 3-colour PNGs for weather-mini
 └── data/              # Weight CSVs (git-ignored)
 ```
 
@@ -71,13 +79,17 @@ read rather than failing the request.
 ## Endpoints
 
 Every endpoint is served in two forms, registered together by `register()` in
-`main.rs`:
+`main.rs` with the `DisplayProfile` it renders for:
 
-- `/<base>/seed-e1002.bin` — EPBM bitmap for the device
+- `/<base>/<suffix>` — EPBM bitmap for the device
 - `/<base>/svg` — the same SVG, for previewing in a browser
 
-with `<base>` one of: `weather`, `weather-overview`, `stocks`, `fred`,
-`weight/forecast`, `weight/velocity`.
+| Profile | Suffix | Size | Colours | Dither | Bases |
+|---|---|---|---|---|---|
+| `SEED_E1002` | `seed-e1002.bin` | 800x480 | all 6 | Atkinson | `weather`, `weather-overview`, `stocks`, `fred`, `weight/forecast`, `weight/velocity` |
+| `FEATHER_TRICOLOR` | `tricolor-296.bin` | 296x128 | black/white/red | none | `weather-mini` |
+
+Keep the `ENDPOINTS` list (startup banner) in step with the `register()` calls.
 
 Query parameters: `battery_pct`, `lat`/`lon` (weather, overriding the defaults),
 `user` (weight, selects `<dir>/<user>.csv`), `date`/`duration` (FRED).
@@ -93,8 +105,10 @@ deliberate: the device has no way to display an HTTP status.
    `resvg`/`tiny-skia` onto a white background.
 3. Each pixel is matched to the nearest palette entry in CIELAB space, after a
    20% saturation boost that compensates for e-paper's muted pigments.
-4. Atkinson error diffusion spreads the quantisation error (6/8 of it; the rest
-   is absorbed, which keeps contrast crisp).
+4. Only the profile's palette is searched. With dithering, Atkinson error
+   diffusion spreads the quantisation error (6/8 of it; the rest is absorbed,
+   which keeps contrast crisp). Without it (tri-colour), each pixel snaps to the
+   nearest colour, which keeps small text legible at 296x128.
 
 The system font database is expensive to build, so it is loaded once into a
 `OnceLock` and shared by every render. Do not move it back inside the render path.
@@ -104,6 +118,7 @@ The system font database is expensive to build, so it is loaded once into a
 8-byte header — `"EPBM"` magic, then width and height as big-endian `u16` —
 followed by one byte per pixel. For 800x480 that is exactly 384,008 bytes. Byte
 values index the palette: 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow.
+A tri-colour bitmap is the same format using only 0, 1 and 4: 37,896 bytes.
 
 ## Chart Conventions (server)
 
@@ -121,6 +136,11 @@ values index the palette: 0 black, 1 white, 2 green, 3 blue, 4 red, 5 yellow.
   values so an autoscaled row still colours a value as the meter bars do.
 - SVG `clipPath` and gradient ids must be unique within a document. Charts that
   can repeat build ids from their coordinates.
+- `generate_weather_mini_svg` (tri-colour) uses only `black`, `white`, `red`,
+  bold DejaVu Sans at 11px or larger, and red only for things needing
+  attention (alerts, rain, <=32°F / >=90°F, low battery). With no dithering,
+  a 1px line must sit on a pixel centre (x.5): otherwise it renders as two grey
+  pixels that snap to white and disappear.
 
 ## Client Behaviour
 
@@ -148,6 +168,20 @@ arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 ```
 
 `deploy/flash_client.sh` chains all three.
+
+### Tri-colour client (`client-tricolor/`)
+
+Timer wake only (`WAKE_HOURS`, default 06:00 and 18:00), no buttons. It downloads and
+validates the whole 37,896-byte bitmap *before* touching the panel, so on any
+failure the previous image stays up and it retries in an hour
+(`ERROR_RETRY_SEC`). The battery comes from the MAX17048 fuel gauge over I2C. At
+or below 15% it skips WiFi, draws a low-battery notice locally, and sleeps a
+day. Uses GxEPD2 (`GxEPD2_290c`); if the panel shows garbage, the FeatherWing
+may be the SSD1680 revision (`GxEPD2_290_C90c`).
+
+```bash
+deploy/flash_tricolor.sh      # FQBN esp32:esp32:adafruit_feather_esp32s2, PORT=/dev/ttyACM0
+```
 
 ## Deployment
 
