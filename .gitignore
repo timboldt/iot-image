@@ -4,6 +4,7 @@
 
 # Arduino secrets (contains WiFi credentials)
 client/arduino_secrets.h
+client-tricolor/arduino_secrets.h
 
 data/
 server/*.bin

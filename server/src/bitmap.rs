@@ -85,20 +85,26 @@ impl EpdBitmap {
     }
 }
 
-/// Generate a test pattern bitmap with color bars
-pub fn generate_test_bitmap(width: u16, height: u16) -> EpdBitmap {
+/// Every colour of the Spectra 6 panel (the reTerminal e1002).
+pub const SIX_COLOR: &[EpdColor] = &[
+    EpdColor::Black,
+    EpdColor::White,
+    EpdColor::Green,
+    EpdColor::Blue,
+    EpdColor::Red,
+    EpdColor::Yellow,
+];
+
+/// The white/black/red panel. Its bitmaps are ordinary EPBM that only ever
+/// use these three byte values.
+pub const TRI_COLOR: &[EpdColor] = &[EpdColor::Black, EpdColor::White, EpdColor::Red];
+
+/// Generate a test pattern bitmap with one bar per palette colour
+pub fn generate_test_bitmap(width: u16, height: u16, palette: &[EpdColor]) -> EpdBitmap {
     let mut bitmap = EpdBitmap::new(width, height);
 
-    // Color bars - each 1/6th of the width
-    let bar_width = width / 6;
-    let colors = [
-        EpdColor::Black,
-        EpdColor::White,
-        EpdColor::Green,
-        EpdColor::Blue,
-        EpdColor::Red,
-        EpdColor::Yellow,
-    ];
+    let colors = palette;
+    let bar_width = width / colors.len().max(1) as u16;
 
     // Draw horizontal color bars in top half
     for (i, &color) in colors.iter().enumerate() {
@@ -289,30 +295,20 @@ const ATKINSON_KERNEL: [(i32, i32, f32); 6] = [
     (0, 2, 1.0 / 8.0),  // Below + 1
 ];
 
-/// Map RGB color to nearest e-ink display color using perceptual color matching
+/// Map RGB color to the nearest colour in `palette` using perceptual color matching
 /// This function finds the closest color without dithering (used by error diffusion)
-fn rgb_to_epd_color(r: u8, g: u8, b: u8) -> EpdColor {
+fn rgb_to_epd_color(r: u8, g: u8, b: u8, palette: &[EpdColor]) -> EpdColor {
     // Pre-process: Boost saturation by 20% to compensate for e-paper's less vivid pigments
     let (r, g, b) = boost_saturation(r, g, b, 1.2);
 
     // Convert input RGB to CIELAB
     let (l, a, b) = rgb_to_lab(r, g, b);
 
-    // Calculate perceptual distances to all palette colors
-    let colors = [
-        EpdColor::Black,
-        EpdColor::White,
-        EpdColor::Green,
-        EpdColor::Blue,
-        EpdColor::Red,
-        EpdColor::Yellow,
-    ];
-
-    colors
+    // Calculate perceptual distances to the allowed palette colors
+    palette
         .iter()
-        .enumerate()
-        .map(|(idx, &color)| {
-            let lab = PALETTE_LAB[idx];
+        .map(|&color| {
+            let lab = PALETTE_LAB[color as usize];
             let dist = delta_e(l, a, b, lab[0], lab[1], lab[2]);
             (color, dist)
         })
@@ -342,8 +338,18 @@ fn font_database() -> Arc<usvg::fontdb::Database> {
         .clone()
 }
 
-/// Render SVG bytes to e-ink bitmap using Atkinson error diffusion dithering
-pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<EpdBitmap, String> {
+/// Render SVG bytes to an e-ink bitmap using only the colours in `palette`.
+///
+/// With `dither`, quantisation error is spread with Atkinson error diffusion,
+/// which suits the large panel's gradients. Without it each pixel simply takes
+/// the nearest colour, which keeps small text crisp on a low-resolution panel.
+pub fn render_svg_to_bitmap(
+    svg_data: &[u8],
+    width: u16,
+    height: u16,
+    palette: &[EpdColor],
+    dither: bool,
+) -> Result<EpdBitmap, String> {
     let opts = usvg::Options {
         fontdb: font_database(),
         ..usvg::Options::default()
@@ -398,7 +404,11 @@ pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<
             let b = (pixel.blue() as f32 + err_b).clamp(0.0, 255.0) as u8;
 
             // Find closest e-ink color
-            let color = rgb_to_epd_color(r, g, b);
+            let color = rgb_to_epd_color(r, g, b, palette);
+            bitmap.set_pixel(x, y, color);
+            if !dither {
+                continue;
+            }
 
             // Get the actual RGB values of the chosen color
             let (cr, cg, cb) = epd_color_to_rgb(color);
@@ -420,10 +430,31 @@ pub fn render_svg_to_bitmap(svg_data: &[u8], width: u16, height: u16) -> Result<
                     err.2 += quant_err_b * weight;
                 }
             }
-
-            bitmap.set_pixel(x, y, color);
         }
     }
 
     Ok(bitmap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_svg_to_bitmap, TRI_COLOR};
+
+    #[test]
+    fn tricolor_render_uses_only_black_white_and_red() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="296" height="128">
+            <rect x="0" y="0" width="70" height="128" fill="red"/>
+            <rect x="70" y="0" width="70" height="128" fill="blue"/>
+            <rect x="140" y="0" width="70" height="128" fill="green"/>
+            <text x="220" y="60" font-size="14" font-weight="bold">68&#176;</text>
+        </svg>"#;
+        let bytes = render_svg_to_bitmap(svg, 296, 128, TRI_COLOR, false)
+            .unwrap()
+            .to_bytes();
+        assert_eq!(bytes.len(), 8 + 296 * 128);
+        assert_eq!(&bytes[..8], b"EPBM\x01\x28\x00\x80");
+        assert!(bytes[8..].iter().all(|b| [0, 1, 4].contains(b)));
+        // Red stays red rather than being dithered.
+        assert_eq!(bytes[8 + 10 * 296 + 10], 4);
+    }
 }
