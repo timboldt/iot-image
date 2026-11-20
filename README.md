@@ -12,8 +12,8 @@ The backend is currently written in Rust. The frontend currently uses the Arduin
 ### Weather Display
 ![Weather Display](assets/weather.png)
 
-### Weather Overview
-![Weather Overview](assets/weather-overview.png)
+### Week Ahead (with air quality)
+![Week Ahead](assets/weather-week.png)
 
 ### Tri-colour Weather (2.9" white/black/red, shown at 2x)
 ![Tri-colour Weather](assets/weather-mini.png)

@@ -1,3 +1,4 @@
+mod air_quality;
 mod bitmap;
 mod fred;
 mod kalman;
@@ -6,6 +7,7 @@ mod svg_common;
 mod weather;
 mod weight;
 
+use air_quality::fetch_air_quality;
 use axum::{
     extract::{Query, State},
     response::{IntoResponse, Response},
@@ -24,8 +26,7 @@ use std::path::Path;
 use std::sync::Arc;
 use stocks::{fetch_stocks, generate_stocks_svg};
 use weather::{
-    fetch_weather, fetch_weather_overview, generate_weather_mini_svg,
-    generate_weather_overview_svg, generate_weather_svg,
+    fetch_weather, generate_weather_mini_svg, generate_weather_svg, generate_weather_week_svg,
 };
 use weight::{fetch_weight_data, generate_forecast_svg, generate_velocity_svg};
 
@@ -254,12 +255,28 @@ async fn weather_mini_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgRes
         .map_err(|e| format!("fetching weather: {}", e))
 }
 
-async fn weather_overview_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
+/// The week-ahead page. Served at `weather-overview`, the URL the device's
+/// left button already requests, which once showed OpenWeatherMap's text
+/// overview. Air quality is optional: the page renders without it.
+async fn weather_week_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
     let (lat, lon) = weather_coordinates(&state, &query);
-    fetch_weather_overview(lat, lon, &state.api_key)
-        .await
-        .map(|weather| generate_weather_overview_svg(&weather, query.battery_pct, &state.geocoder))
-        .map_err(|e| format!("fetching weather overview: {}", e))
+    let key = &state.api_key;
+    // Errors become Strings inside each future so that neither holds a
+    // non-Send error across the join.
+    let (weather, air) = tokio::join!(
+        async {
+            fetch_weather(lat, lon, key)
+                .await
+                .map_err(|e| format!("fetching weather: {}", e))
+        },
+        async { fetch_air_quality(lat, lon, key).await.ok() },
+    );
+    Ok(generate_weather_week_svg(
+        &weather?,
+        air.as_ref(),
+        query.battery_pct,
+        &state.geocoder,
+    ))
 }
 
 async fn stocks_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
@@ -336,12 +353,7 @@ async fn main() {
 
     let mut app = Router::new();
     app = register(app, "weather", &SEED_E1002, weather_endpoint);
-    app = register(
-        app,
-        "weather-overview",
-        &SEED_E1002,
-        weather_overview_endpoint,
-    );
+    app = register(app, "weather-overview", &SEED_E1002, weather_week_endpoint);
     app = register(app, "stocks", &SEED_E1002, stocks_endpoint);
     app = register(app, "fred", &SEED_E1002, fred_endpoint);
     app = register(
