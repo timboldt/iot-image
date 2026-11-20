@@ -8,7 +8,7 @@ mod weight;
 
 use axum::{
     extract::{Query, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -110,7 +110,7 @@ const FEATHER_TRICOLOR: DisplayProfile = DisplayProfile {
     dither: false,
 };
 
-/// Every endpoint, served at both `/<base>/<suffix>` and `/<base>/svg`.
+/// Every endpoint, served at `/<base>/<suffix>`, `/<base>/svg` and `/<base>/png`.
 const ENDPOINTS: [(&str, &DisplayProfile); 7] = [
     ("weather", &SEED_E1002),
     ("weather-overview", &SEED_E1002),
@@ -121,31 +121,29 @@ const ENDPOINTS: [(&str, &DisplayProfile); 7] = [
     ("weather-mini", &FEATHER_TRICOLOR),
 ];
 
-fn render_svg_bytes(svg_content: String, display: &DisplayProfile) -> Vec<u8> {
-    let bitmap = match bitmap::render_svg_to_bitmap(
-        svg_content.as_bytes(),
+fn render(svg: &str, display: &DisplayProfile) -> Result<bitmap::EpdBitmap, String> {
+    bitmap::render_svg_to_bitmap(
+        svg.as_bytes(),
         display.width,
         display.height,
         display.palette,
         display.dither,
-    ) {
-        Ok(bmp) => bmp,
-        Err(e) => {
-            eprintln!("Error rendering SVG: {}", e);
-            test_bitmap(display)
-        }
-    };
-
-    bitmap.to_bytes()
+    )
 }
 
 fn test_bitmap(display: &DisplayProfile) -> bitmap::EpdBitmap {
     bitmap::generate_test_bitmap(display.width, display.height, display.palette)
 }
 
-fn fallback_bitmap_bytes(error: &str, display: &DisplayProfile) -> Vec<u8> {
-    eprintln!("Error {}", error);
-    test_bitmap(display).to_bytes()
+/// The bitmap for `svg`, or the colour-bar test pattern if it cannot be built.
+fn render_or_test_pattern(svg: SvgResult, display: &DisplayProfile) -> bitmap::EpdBitmap {
+    match svg.and_then(|svg| render(&svg, display)) {
+        Ok(bitmap) => bitmap,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            test_bitmap(display)
+        }
+    }
 }
 
 fn error_svg(e: impl Display, display: &DisplayProfile) -> String {
@@ -181,24 +179,34 @@ fn weather_coordinates<'a>(state: &'a AppState, query: &'a QueryArgs) -> (&'a st
 /// The SVG for one endpoint, or a message describing why it could not be built.
 type SvgResult = Result<String, String>;
 
-fn bitmap_response(svg: SvgResult, display: &DisplayProfile) -> impl IntoResponse {
-    let bytes = match svg {
-        Ok(svg) => render_svg_bytes(svg, display),
-        Err(e) => fallback_bitmap_bytes(&e, display),
-    };
-    ([("Content-Type", "application/octet-stream")], bytes)
+fn bitmap_response(svg: SvgResult, display: &DisplayProfile) -> Response {
+    let bytes = render_or_test_pattern(svg, display).to_bytes();
+    ([("Content-Type", "application/octet-stream")], bytes).into_response()
 }
 
-fn svg_response(svg: SvgResult, display: &DisplayProfile) -> impl IntoResponse {
+fn svg_response(svg: SvgResult, display: &DisplayProfile) -> Response {
     let body = match svg {
         Ok(svg) => svg,
         Err(e) => error_svg(e, display),
     };
-    ([("Content-Type", "image/svg+xml")], body)
+    ([("Content-Type", "image/svg+xml")], body).into_response()
 }
 
-/// Registers the `.bin` and `/svg` variants of one endpoint, which differ only
-/// in how the same SVG is encoded for the response.
+/// The device bitmap as a PNG, so the quantised/dithered result can be checked
+/// in a browser. Errors are rendered as text, as `/svg` does.
+fn png_response(svg: SvgResult, display: &DisplayProfile) -> Response {
+    let svg = svg.or_else(|e| Ok(error_svg(e, display)));
+    match render_or_test_pattern(svg, display).to_png() {
+        Ok(png) => ([("Content-Type", "image/png")], png).into_response(),
+        Err(e) => svg_response(Err(e), display),
+    }
+}
+
+/// Encodes an endpoint's SVG (or its error) as one response format.
+type Responder = fn(SvgResult, &DisplayProfile) -> Response;
+
+/// Registers the `.bin`, `/svg` and `/png` variants of one endpoint, which
+/// differ only in how the same SVG is encoded for the response.
 fn register<F, Fut>(
     router: Router<Arc<AppState>>,
     base: &str,
@@ -209,26 +217,25 @@ where
     F: Fn(Arc<AppState>, QueryArgs) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = SvgResult> + Send,
 {
-    let for_bitmap = producer.clone();
-    router
-        .route(
-            &format!("/{}/{}", base, display.suffix),
-            get(
-                move |State(state): State<Arc<AppState>>, Query(query): Query<QueryArgs>| {
-                    let producer = for_bitmap.clone();
-                    async move { bitmap_response(producer(state, query).await, display) }
-                },
-            ),
-        )
-        .route(
-            &format!("/{}/svg", base),
-            get(
-                move |State(state): State<Arc<AppState>>, Query(query): Query<QueryArgs>| {
-                    let producer = producer.clone();
-                    async move { svg_response(producer(state, query).await, display) }
-                },
-            ),
-        )
+    let variants: [(&str, Responder); 3] = [
+        (display.suffix, bitmap_response),
+        ("svg", svg_response),
+        ("png", png_response),
+    ];
+    variants
+        .into_iter()
+        .fold(router, |router, (suffix, respond)| {
+            let producer = producer.clone();
+            router.route(
+                &format!("/{}/{}", base, suffix),
+                get(
+                    move |State(state): State<Arc<AppState>>, Query(query): Query<QueryArgs>| {
+                        let producer = producer.clone();
+                        async move { respond(producer(state, query).await, display) }
+                    },
+                ),
+            )
+        })
 }
 
 async fn weather_endpoint(state: Arc<AppState>, query: QueryArgs) -> SvgResult {
@@ -307,6 +314,10 @@ async fn main() {
     println!("  SVG Preview:");
     for (base, _) in ENDPOINTS {
         println!("    - http://localhost:{}/{}/svg", args.port, base);
+    }
+    println!("  PNG Preview (as dithered for the panel):");
+    for (base, _) in ENDPOINTS {
+        println!("    - http://localhost:{}/{}/png", args.port, base);
     }
     println!("Format: Raw e-ink bitmap (EPBM)");
     println!("Weather location: ({}, {})\n", args.lat, args.lon);

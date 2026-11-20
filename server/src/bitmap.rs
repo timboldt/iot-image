@@ -83,6 +83,20 @@ impl EpdBitmap {
 
         bytes
     }
+
+    /// Encode the bitmap as a PNG using the palette's approximate RGB values,
+    /// showing what the panel will display after quantisation and dithering.
+    pub fn to_png(&self) -> Result<Vec<u8>, String> {
+        let mut pixmap = tiny_skia::Pixmap::new(self.width as u32, self.height as u32)
+            .ok_or("Failed to create pixmap")?;
+        for (px, &idx) in pixmap.data_mut().chunks_exact_mut(4).zip(&self.data) {
+            let [r, g, b] = PALETTE[idx as usize];
+            px.copy_from_slice(&[r, g, b, 255]);
+        }
+        pixmap
+            .encode_png()
+            .map_err(|e| format!("Failed to encode PNG: {}", e))
+    }
 }
 
 /// Every colour of the Spectra 6 panel (the reTerminal e1002).
@@ -456,5 +470,22 @@ mod tests {
         assert!(bytes[8..].iter().all(|b| [0, 1, 4].contains(b)));
         // Red stays red rather than being dithered.
         assert_eq!(bytes[8 + 10 * 296 + 10], 4);
+    }
+
+    #[test]
+    fn png_shows_palette_colours() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="296" height="128">
+            <rect x="0" y="0" width="148" height="128" fill="red"/>
+        </svg>"#;
+        let png = render_svg_to_bitmap(svg, 296, 128, TRI_COLOR, false)
+            .unwrap()
+            .to_png()
+            .unwrap();
+        let pixmap = tiny_skia::Pixmap::decode_png(&png).unwrap();
+        assert_eq!((pixmap.width(), pixmap.height()), (296, 128));
+        let red = pixmap.pixel(10, 10).unwrap();
+        assert_eq!((red.red(), red.green(), red.blue()), (255, 0, 0));
+        let white = pixmap.pixel(200, 10).unwrap();
+        assert_eq!((white.red(), white.green(), white.blue()), (255, 255, 255));
     }
 }
