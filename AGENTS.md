@@ -78,11 +78,13 @@ read rather than failing the request.
 
 ## Endpoints
 
-Every endpoint is served in two forms, registered together by `register()` in
+Every endpoint is served in three forms, registered together by `register()` in
 `main.rs` with the `DisplayProfile` it renders for:
 
 - `/<base>/<suffix>` — EPBM bitmap for the device
 - `/<base>/svg` — the same SVG, for previewing in a browser
+- `/<base>/png` — the device bitmap (palette-quantised and dithered) as a PNG,
+  to see in a browser exactly what the panel will show
 
 | Profile | Suffix | Size | Colours | Dither | Bases |
 |---|---|---|---|---|---|
@@ -95,7 +97,8 @@ Query parameters: `battery_pct`, `lat`/`lon` (weather, overriding the defaults),
 `user` (weight, selects `<dir>/<user>.csv`), `date`/`duration` (FRED).
 
 Failures never return an HTTP error. A `.bin` request falls back to the colour-bar
-test pattern; an `/svg` request returns an SVG containing the error text. This is
+test pattern; an `/svg` request returns an SVG containing the error text, and a
+`/png` request renders that error SVG. This is
 deliberate: the device has no way to display an HTTP status.
 
 ## Rendering Pipeline
