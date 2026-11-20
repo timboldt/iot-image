@@ -1242,6 +1242,55 @@ fn truncate_chars(text: &str, max: usize) -> String {
     }
 }
 
+/// Sort key for an alert: warnings first, then watches, then advisories and
+/// anything else (statements, outlooks).
+fn alert_severity_rank(event: &str) -> u8 {
+    let last = event.split_whitespace().last().unwrap_or("");
+    match last {
+        "Warning" | "Emergency" => 0,
+        "Watch" => 1,
+        "Advisory" => 2,
+        _ => 3,
+    }
+}
+
+/// "Wind Advisory" -> "Wind Adv", for squeezing several alerts onto one line.
+fn abbreviate_alert(event: &str) -> String {
+    match event.rsplit_once(' ') {
+        Some((head, "Advisory")) => format!("{head} Adv"),
+        Some((head, "Warning")) => format!("{head} Wrn"),
+        Some((head, "Statement")) => format!("{head} Stmt"),
+        _ => event.to_string(),
+    }
+}
+
+/// One line naming the active alerts, most severe first, cut to `max_chars`.
+/// With several, a leading count — "(3) Wind Adv, Cold Wrn, …" — survives any
+/// cut, so nothing needs measuring. Duplicate events (the same alert issued by
+/// overlapping offices) count once. Names are shortened only when the full
+/// names don't fit.
+fn alert_line(alerts: &[WeatherAlert], max_chars: usize) -> String {
+    let mut events: Vec<&str> = Vec::new();
+    for alert in alerts {
+        let event = alert.event.trim();
+        if !event.is_empty() && !events.contains(&event) {
+            events.push(event);
+        }
+    }
+    events.sort_by_key(|e| alert_severity_rank(e)); // stable: ties keep API order
+
+    let prefix = match events.len() {
+        0 | 1 => String::new(),
+        n => format!("({n}) "),
+    };
+    let full = format!("{prefix}{}", events.join(", "));
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    let short: Vec<String> = events.iter().map(|e| abbreviate_alert(e)).collect();
+    truncate_chars(&format!("{prefix}{}", short.join(", ")), max_chars)
+}
+
 /// Bold DejaVu Sans text for the tri-colour display. Below 12px the strokes
 /// break up once snapped to three colours, so nothing here is smaller than 11.
 fn mini_text(svg: &mut String, x: f32, y: f32, size: u32, anchor: &str, fill: &str, body: &str) {
@@ -1431,9 +1480,12 @@ pub fn generate_weather_mini_svg(
                 svg.push('\n');
             }
 
-            // Ticks every 6 hours, labelled where they clear "Now" and each other.
-            mini_text(&mut svg, CHART_X, 99.0, 11, "start", "black", "Now");
-            let mut last_label_x = CHART_X + 12.0;
+            // Ticks every 6 hours, labelled where they clear each other. A tick
+            // too near the left edge to centre its label is labelled only when
+            // it is within 10 minutes of now, so the edge label reads as now.
+            const NEAR_NOW_SECS: i64 = 10 * 60;
+            const EDGE_LABEL_HALF_W: f32 = 10.0;
+            let mut last_label_x = f32::NEG_INFINITY;
             for hour in hours {
                 let at = local(hour.dt);
                 if at.hour() % 6 != 0 {
@@ -1447,7 +1499,20 @@ pub fn generate_weather_mini_svg(
                     RAIN_TOP + RAIN_H + 2.5
                 ));
                 svg.push('\n');
-                if x - last_label_x >= 24.0 && x <= CHART_X + CHART_W - 8.0 {
+                if x < CHART_X + EDGE_LABEL_HALF_W {
+                    if (hour.dt - weather.current.dt).abs() <= NEAR_NOW_SECS {
+                        mini_text(
+                            &mut svg,
+                            CHART_X,
+                            99.0,
+                            11,
+                            "start",
+                            "black",
+                            &short_hour(at.hour()),
+                        );
+                        last_label_x = CHART_X + EDGE_LABEL_HALF_W;
+                    }
+                } else if x - last_label_x >= 24.0 && x <= CHART_X + CHART_W - 8.0 {
                     mini_text(
                         &mut svg,
                         x,
@@ -1572,25 +1637,12 @@ pub fn generate_weather_mini_svg(
     }
 
     // Footer: an alert, else the rain window, else sunrise and sunset.
-    if let Some(alert) = weather.alerts.first() {
+    if !weather.alerts.is_empty() {
         svg.push_str(r#"  <rect x="0" y="107" width="296" height="21" fill="red"/>"#);
         svg.push('\n');
-        let mut line = alert.event.clone();
-        if let Some(range) = alert_time_range(alert, &tz) {
-            line = format!("{} {}", line, range);
-        }
-        if weather.alerts.len() > 1 {
-            line = format!("{} +{}", line, weather.alerts.len() - 1);
-        }
-        mini_text(
-            &mut svg,
-            4.0,
-            122.0,
-            12,
-            "start",
-            "white",
-            &truncate_chars(&line, 40),
-        );
+        // 40 bold 12px characters fill the 296px bar.
+        let line = alert_line(&weather.alerts, 40);
+        mini_text(&mut svg, 4.0, 122.0, 12, "start", "white", &line);
     } else {
         svg.push_str(
             r#"  <line x1="0" y1="106.5" x2="296" y2="106.5" stroke="black" stroke-width="1"/>"#,
@@ -1630,10 +1682,10 @@ pub fn generate_weather_mini_svg(
 #[cfg(test)]
 mod tests {
     use super::{
-        display_icon_for_daily_weather, generate_weather_mini_svg, night_spans, rain_fill,
-        rain_window, short_hour, temperature_spark_range, truncate_chars, CurrentWeather,
-        DailyWeather, FeelsLike, HourlyPrecip, HourlyWeather, SparkFrame, TempRange, Weather,
-        WeatherAlert, WeatherData,
+        alert_line, display_icon_for_daily_weather, generate_weather_mini_svg, night_spans,
+        rain_fill, rain_window, short_hour, temperature_spark_range, truncate_chars,
+        CurrentWeather, DailyWeather, FeelsLike, HourlyPrecip, HourlyWeather, SparkFrame,
+        TempRange, Weather, WeatherAlert, WeatherData,
     };
     use reverse_geocoder::ReverseGeocoder;
 
@@ -1730,6 +1782,71 @@ mod tests {
     }
 
     #[test]
+    fn mini_axis_labels_the_left_edge_only_near_now() {
+        let geocoder = ReverseGeocoder::new();
+        // Hourly data from 18:00 local (T0 is 16:00 at UTC-8).
+        let hours: Vec<HourlyWeather> = (2..27).map(|i| hour(i, 50.0, 0.0, 0.0)).collect();
+        let edge_label = r#"x="66.0" y="99.0" text-anchor="start""#;
+
+        let mut data = weather(hours, vec![]);
+        data.current.dt = T0 + 2 * HOUR + 5 * 60;
+        let svg = generate_weather_mini_svg(&data, None, &geocoder);
+        assert!(!svg.contains(">Now<"));
+        assert!(svg.contains(&format!("{edge_label} font-family=\"DejaVu Sans\" font-weight=\"bold\" font-size=\"11\" fill=\"black\">6p<")));
+
+        data.current.dt = T0 + 2 * HOUR + 30 * 60;
+        let svg = generate_weather_mini_svg(&data, None, &geocoder);
+        assert!(!svg.contains(edge_label));
+        // The later ticks are still labelled.
+        assert!(svg.contains(">12a<"));
+    }
+
+    fn alerts(events: &[&str]) -> Vec<WeatherAlert> {
+        events
+            .iter()
+            .map(|e| WeatherAlert {
+                event: e.to_string(),
+                description: String::new(),
+                start: T0,
+                end: T0 + 6 * HOUR,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn alert_line_dedupes_and_keeps_full_names_when_they_fit() {
+        let line = alert_line(
+            &alerts(&["Wind Advisory", "Frost Advisory", "Wind Advisory"]),
+            40,
+        );
+        assert_eq!(line, "(2) Wind Advisory, Frost Advisory");
+        assert_eq!(alert_line(&alerts(&["Wind Advisory"]), 40), "Wind Advisory");
+    }
+
+    #[test]
+    fn alert_line_sorts_by_severity_and_abbreviates_to_fit() {
+        let line = alert_line(
+            &alerts(&["Frost Advisory", "Flood Watch", "Wind Warning"]),
+            40,
+        );
+        assert_eq!(line, "(3) Wind Wrn, Flood Watch, Frost Adv");
+    }
+
+    #[test]
+    fn alert_line_keeps_the_count_when_cut() {
+        let line = alert_line(
+            &alerts(&[
+                "Winter Storm Warning",
+                "Avalanche Warning",
+                "Wind Chill Advisory",
+                "Special Weather Statement",
+            ]),
+            40,
+        );
+        assert_eq!(line, "(4) Winter Storm Wrn, Avalanche Wrn, Wi…");
+    }
+
+    #[test]
     fn mini_footer_prefers_alert_then_rain_then_sun() {
         let geocoder = ReverseGeocoder::new();
         let dry: Vec<HourlyWeather> = (0..25).map(|i| hour(i, 50.0, 0.0, 0.0)).collect();
@@ -1764,7 +1881,7 @@ mod tests {
         };
         let svg = generate_weather_mini_svg(&weather(vec![], vec![alert]), None, &geocoder);
         assert!(parses(&svg));
-        assert!(svg.contains("Wind &amp; Dust Advisory"));
+        assert!(svg.contains(">Wind &amp; Dust Advisory<"));
         assert!(svg.contains(r#"fill="red"/>"#));
         assert!(svg.contains("No hourly data"));
     }
