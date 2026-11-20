@@ -27,7 +27,8 @@ re-fetches upstream data and re-renders.
 iot-image/
 ├── server/src/
 │   ├── main.rs        # CLI args, shared state, route registration
-│   ├── weather.rs     # OpenWeatherMap One Call 3.0 + forecast/overview SVGs
+│   ├── weather.rs     # OpenWeatherMap One Call 3.0 + forecast/week/mini SVGs
+│   ├── air_quality.rs # OpenWeatherMap air-pollution forecast -> US EPA AQI
 │   ├── stocks.rs      # Twelve Data candlesticks + 2x2 chart grid SVG
 │   ├── fred.rs        # FRED series, yield-curve analysis + "crash monitor" SVG
 │   ├── weight.rs      # CSV weight data, projections + forecast/velocity SVGs
@@ -131,6 +132,13 @@ A tri-colour bitmap is the same format using only 0, 1 and 4: 37,896 bytes.
   previously put the dashed threshold lines at the wrong height.
 - Ranges are padded so regime thresholds are always on screen, and those
   thresholds are then always drawn.
+- `weather-overview` serves the **week-ahead** page (`generate_weather_week_svg`),
+  not OpenWeatherMap's text overview, which it replaced; the URL was kept so
+  the device firmware did not change. Eight daily rows share one temperature
+  scale; the most severe alert is shown in full beneath them. Its AQI chip uses
+  the US EPA scale computed in `air_quality.rs` from hourly concentrations
+  (OpenWeatherMap's own 1-5 `aqi` is a different scale); a failed air-quality
+  fetch drops the chip rather than failing the page.
 - `weather.rs` draws its meters with `GradientBar`; add new meters through it
   rather than emitting the rect/clipPath/rect trio by hand.
 - The weather "today" panel is 24 hours of hourly sparklines positioned through
@@ -150,7 +158,7 @@ A tri-colour bitmap is the same format using only 0, 1 and 4: 37,896 bytes.
 - **Wake schedule:** 06:00, 12:00 and 18:00 local (`WAKE_HOUR_*` in `config.h`),
   or any button press. Falls back to a 6-hour timer if NTP never syncs.
 - **Buttons** — the mode persists across deep sleep in `RTC_DATA_ATTR` memory:
-  - `BUTTON_KEY2` (left) — weather: forecast <-> overview
+  - `BUTTON_KEY2` (left) — weather: forecast <-> week ahead
   - `BUTTON_KEY1` (middle) — finance: stocks <-> FRED
   - `BUTTON_KEY0` (right, green) — refresh the current screen
   The weight modes are still defined but no button selects them.

@@ -70,7 +70,7 @@
 // Active-low, and any press wakes the device from deep sleep.
 #define BUTTON_KEY0 3  // Right button (Green) - Refresh the current screen
 #define BUTTON_KEY1 4  // Middle button - Finance: Stocks <-> FRED
-#define BUTTON_KEY2 5  // Left button - Weather: forecast <-> overview
+#define BUTTON_KEY2 5  // Left button - Weather: forecast <-> week ahead
 
 // EPBM streaming buffer size
 // Used for downloading and rendering chunks on-the-fly

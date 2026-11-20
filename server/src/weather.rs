@@ -1,3 +1,4 @@
+use crate::air_quality::{aqi_category, us_aqi, AirForecast};
 use crate::svg_common;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::prelude::*;
@@ -17,16 +18,6 @@ pub struct WeatherData {
     pub hourly: Vec<HourlyWeather>,
     #[serde(default)]
     pub alerts: Vec<WeatherAlert>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WeatherOverviewData {
-    pub lat: f32,
-    pub lon: f32,
-    pub tz: String,
-    pub date: String,
-    pub units: String,
-    pub weather_overview: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -691,23 +682,6 @@ pub async fn fetch_weather(
     Ok(weather_data)
 }
 
-pub async fn fetch_weather_overview(
-    lat: &str,
-    lon: &str,
-    key: &str,
-) -> Result<WeatherOverviewData, Box<dyn std::error::Error>> {
-    let url = format!(
-        "https://api.openweathermap.org/data/3.0/onecall/overview?lat={}&lon={}&units=imperial&appid={}",
-        lat, lon, key
-    );
-
-    let client = reqwest::Client::new();
-    let response = client.get(&url).send().await?;
-    let weather_overview_data = response.json::<WeatherOverviewData>().await?;
-
-    Ok(weather_overview_data)
-}
-
 fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -735,51 +709,360 @@ fn wrap_text_lines(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-pub fn generate_weather_overview_svg(
-    weather: &WeatherOverviewData,
+/// Days shown on the week page: everything One Call forecasts.
+const WEEK_DAYS: usize = 8;
+
+/// The week page's temperature bars: their left edge and width.
+const WEEK_BAR_X: f32 = 250.0;
+const WEEK_BAR_W: f32 = 260.0;
+
+/// Width, in characters, the week page wraps alert text to.
+const WEEK_ALERT_CHARS: usize = 96;
+
+/// An alert's description as display lines. NWS text comes as "* WHAT...x"
+/// paragraphs separated by blank lines; those become "WHAT: x", one paragraph
+/// per line group, so the bullets survive the wrapping.
+fn alert_description_lines(description: &str, max_chars: usize) -> Vec<String> {
+    description
+        .split("\n\n")
+        .map(|para| {
+            let para = para.trim().trim_start_matches("* ");
+            match para.split_once("...") {
+                Some((label, rest)) if label.chars().all(|c| c.is_uppercase() || c == ' ') => {
+                    format!("{}: {}", label, rest)
+                }
+                _ => para.to_string(),
+            }
+        })
+        .filter(|para| !para.trim().is_empty())
+        .flat_map(|para| wrap_text_lines(&para, max_chars))
+        .collect()
+}
+
+/// The current US AQI as a coloured chip in the top-right corner, with the
+/// worst hour of the next four days beneath it when that is worse.
+fn render_air_quality(svg: &mut String, air: Option<&AirForecast>, tz: &chrono::FixedOffset) {
+    let Some(now) = air.and_then(|a| a.list.first()) else {
+        svg.push_str(r#"  <text x="780" y="38" text-anchor="end" font-family="Arial" font-size="16" fill="black">Air quality unavailable</text>"#);
+        svg.push('\n');
+        return;
+    };
+    let (aqi, pollutant) = us_aqi(&now.components);
+    let (name, fill, text) = aqi_category(aqi);
+    svg.push_str(&format!(
+        concat!(
+            r#"  <rect x="490" y="12" width="290" height="34" rx="6" fill="{}" stroke="black" stroke-width="2"/>"#,
+            "\n",
+            r#"  <text x="635" y="36" text-anchor="middle" font-family="Arial" font-size="18" font-weight="bold" fill="{}">AQI {} · {}</text>"#,
+        ),
+        fill, text, aqi, name
+    ));
+    svg.push('\n');
+
+    let peak = air
+        .into_iter()
+        .flat_map(|a| a.list.iter().skip(1))
+        .map(|s| (us_aqi(&s.components).0, s.dt))
+        .max_by_key(|&(aqi, _)| aqi);
+    // The peak is only news when it is in a worse category than now.
+    let detail = match peak {
+        Some((peak_aqi, dt)) if aqi_category(peak_aqi).0 != name && peak_aqi > aqi => {
+            let when = Utc
+                .timestamp_opt(dt, 0)
+                .single()
+                .unwrap_or_else(Utc::now)
+                .with_timezone(tz);
+            format!(
+                "From {} · peak {} {} {}",
+                pollutant,
+                peak_aqi,
+                aqi_category(peak_aqi).0,
+                when.format("%a %-I%P")
+            )
+        }
+        _ => format!("From {} · stays {} for 4 days", pollutant, name),
+    };
+    svg.push_str(&format!(
+        r#"  <text x="780" y="64" text-anchor="end" font-family="Arial" font-size="14" fill="black">{}</text>"#,
+        svg_common::escape_xml(&detail)
+    ));
+    svg.push('\n');
+}
+
+/// The week ahead: one row per day with the temperature range on a shared
+/// scale, rain and peak gust; the most severe alert in full at the bottom;
+/// and the air quality in the corner. Shown by the left button, alternating
+/// with the main weather screen, so it covers what that screen leaves out.
+pub fn generate_weather_week_svg(
+    weather: &WeatherData,
+    air: Option<&AirForecast>,
     battery_pct: Option<u8>,
     geocoder: &ReverseGeocoder,
 ) -> String {
+    let days = &weather.daily[..weather.daily.len().min(WEEK_DAYS)];
+    if days.is_empty() {
+        return r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480">
+    <text x="400" y="240" text-anchor="middle" font-size="20">Error: weather.daily is empty</text>
+</svg>"#
+            .to_string();
+    }
+    let tz = chrono::FixedOffset::east_opt(weather.timezone_offset).unwrap_or_else(|| Utc.fix());
+
+    // One temperature scale for the whole week, so the bars compare across
+    // days. The gradient is anchored at 32°F and 100°F like every other
+    // temperature colour, rather than stretched over the bar.
+    let lo = days
+        .iter()
+        .map(|d| d.temp.min)
+        .fold(f32::INFINITY, f32::min);
+    let hi = days
+        .iter()
+        .map(|d| d.temp.max)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let (scale_lo, scale_hi) = temperature_spark_range(lo, hi);
+    let inner_x = WEEK_BAR_X + BAR_INSET;
+    let inner_w = WEEK_BAR_W - BAR_INSET * 2.0;
+    let x_at =
+        |t: f32| inner_x + inner_w * ((t - scale_lo) / (scale_hi - scale_lo).max(f32::EPSILON));
+
     let mut svg = String::from(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">"#,
     );
     svg.push('\n');
-
-    svg.push_str(r#"  <defs>"#);
+    svg.push_str(&format!(
+        concat!(
+            r#"  <defs>{}"#,
+            r#"<linearGradient id="weekTemp" gradientUnits="userSpaceOnUse" x1="{:.1}" y1="0" x2="{:.1}" y2="0">"#,
+            r#"<stop offset="0%" style="stop-color:blue;stop-opacity:1"/>"#,
+            r#"<stop offset="100%" style="stop-color:red;stop-opacity:1"/>"#,
+            r#"</linearGradient></defs>"#,
+        ),
+        svg_common::BATTERY_GRADIENT_DEF,
+        x_at(32.0),
+        x_at(100.0)
+    ));
     svg.push('\n');
-    svg.push_str(svg_common::BATTERY_GRADIENT_DEF);
-    svg.push('\n');
-    svg.push_str(r#"  </defs>"#);
-    svg.push('\n');
-
     svg.push_str(r#"  <rect width="800" height="480" fill="white"/>"#);
     svg.push('\n');
 
-    let coords = (weather.lat as f64, weather.lon as f64);
-    let search_result = geocoder.search(coords);
-    svg.push_str(r#"  <text x="20" y="38" font-family="Arial" font-size="30" font-weight="bold" fill="black">Weather Overview</text>"#);
+    // Header: title and place on the left, air quality on the right.
+    let place = geocoder.search((weather.lat as f64, weather.lon as f64));
+    svg.push_str(r#"  <text x="20" y="35" font-family="Arial" font-size="28" font-weight="bold" fill="black">Week Ahead</text>"#);
     svg.push('\n');
     svg.push_str(&format!(
-        r#"  <text x="20" y="62" font-family="Arial" font-size="16" fill="black">{}, {} ({})</text>"#,
-        svg_common::escape_xml(&search_result.record.name),
-        svg_common::escape_xml(&weather.date),
-        svg_common::escape_xml(&weather.tz)
+        r#"  <text x="20" y="58" font-family="Arial" font-size="16" fill="black">{}</text>"#,
+        svg_common::escape_xml(&place.record.name)
     ));
     svg.push('\n');
-    svg.push_str(r#"  <line x1="20" y1="76" x2="780" y2="76" stroke="black" stroke-width="1"/>"#);
+    render_air_quality(&mut svg, air, &tz);
+    svg.push_str(r#"  <line x1="20" y1="72" x2="780" y2="72" stroke="black" stroke-width="2"/>"#);
     svg.push('\n');
 
-    let lines = wrap_text_lines(&weather.weather_overview, 60);
-    let line_height = 26;
-    let mut y = 108;
-    for line in lines.iter().take(14) {
+    // Column headings.
+    for (x, anchor, label) in [
+        (240.0, "end", "Low"),
+        (522.0, "start", "High"),
+        (700.0, "end", "Rain"),
+        (780.0, "end", "Gust"),
+    ] {
         svg.push_str(&format!(
-            r#"  <text x="30" y="{}" font-family="Arial" font-size="24" fill="black">{}</text>"#,
-            y,
-            svg_common::escape_xml(line)
+            r#"  <text x="{}" y="90" text-anchor="{}" font-family="Arial" font-size="13" fill="black">{}</text>"#,
+            x, anchor, label
         ));
         svg.push('\n');
-        y += line_height;
+    }
+
+    // The most severe alert is shown in full below the rows, which shrink to
+    // make room for it.
+    let events = distinct_alert_events(&weather.alerts);
+    let alert = events
+        .first()
+        .and_then(|&e| weather.alerts.iter().find(|a| a.event.trim() == e));
+    let rows_top = 96.0;
+    let rows_bottom = if alert.is_some() { 370.0 } else { 452.0 };
+    let row_h = (rows_bottom - rows_top) / days.len() as f32;
+    // The icons carry their own padding, so they get more than a row's height.
+    let icon_size = (row_h * 1.35).min(64.0);
+
+    for (i, day) in days.iter().enumerate() {
+        let cy = rows_top + row_h * (i as f32 + 0.5);
+        let text_y = cy + 7.0;
+        let local = Utc
+            .timestamp_opt(day.dt, 0)
+            .single()
+            .unwrap_or_else(Utc::now)
+            .with_timezone(&tz);
+        let label = if i == 0 {
+            "Today".to_string()
+        } else {
+            local.format("%a %-d").to_string()
+        };
+        svg.push_str(&format!(
+            r#"  <text x="20" y="{:.1}" font-family="Arial" font-size="20" font-weight="bold" fill="black">{}</text>"#,
+            text_y, label
+        ));
+        svg.push('\n');
+
+        if let Some(w) = day.weather.first() {
+            let icon_code = display_icon_for_daily_weather(&w.icon, day.pop, day.rain);
+            if let Ok(data_uri) = load_weather_icon_as_data_uri(icon_code) {
+                svg.push_str(&format!(
+                    r#"  <image x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" href="{}"/>"#,
+                    170.0 - icon_size / 2.0,
+                    cy - icon_size / 2.0,
+                    icon_size,
+                    icon_size,
+                    data_uri
+                ));
+                svg.push('\n');
+            }
+        }
+
+        // Temperature range on the shared scale, at least a square wide.
+        let bar_h = 16.0;
+        let min_w = bar_h - BAR_INSET * 2.0;
+        let mut fill_x = x_at(day.temp.min);
+        let mut fill_w = x_at(day.temp.max) - fill_x;
+        if fill_w < min_w {
+            fill_x -= (min_w - fill_w) / 2.0;
+            fill_w = min_w;
+        }
+        svg.push_str(
+            &GradientBar {
+                x: WEEK_BAR_X,
+                y: cy - bar_h / 2.0,
+                width: WEEK_BAR_W,
+                height: bar_h,
+                gradient_id: "weekTemp",
+                clip_id: &format!("weekTempClip{}", i),
+                inner_radius: 1,
+            }
+            .render(fill_x - inner_x, fill_w),
+        );
+        svg.push('\n');
+        // Today also marks where the temperature is now.
+        if i == 0 {
+            svg.push_str(&format!(
+                r#"  <circle cx="{:.1}" cy="{:.1}" r="6" fill="white" stroke="black" stroke-width="2"/>"#,
+                x_at(weather.current.temp).clamp(inner_x, inner_x + inner_w),
+                cy
+            ));
+            svg.push('\n');
+        }
+        svg.push_str(&format!(
+            concat!(
+                r#"  <text x="240" y="{y:.1}" text-anchor="end" font-family="Arial" font-size="20" fill="black">{lo:.0}°</text>"#,
+                "\n",
+                r#"  <text x="522" y="{y:.1}" font-family="Arial" font-size="20" font-weight="bold" fill="black">{hi:.0}°</text>"#,
+            ),
+            y = text_y,
+            lo = day.temp.min,
+            hi = day.temp.max
+        ));
+        svg.push('\n');
+
+        // Rain: chance, and amount when there is any; blue when it is the
+        // kind of rain the forecast icons show.
+        let (rain_fill_color, rain_weight) = if is_significant_rain(day.pop, day.rain) {
+            ("blue", "bold")
+        } else {
+            ("black", "normal")
+        };
+        if day.pop >= 0.1 {
+            svg.push_str(&format!(
+                r#"  <text x="625" y="{:.1}" text-anchor="end" font-family="Arial" font-size="16" font-weight="{}" fill="{}">{:.0}%</text>"#,
+                text_y - 1.0,
+                rain_weight,
+                rain_fill_color,
+                day.pop * 100.0
+            ));
+            svg.push('\n');
+        }
+        let inches = day.rain / MM_PER_INCH;
+        if inches >= 0.01 {
+            svg.push_str(&format!(
+                r#"  <text x="700" y="{:.1}" text-anchor="end" font-family="Arial" font-size="16" font-weight="{}" fill="{}">{:.2}"</text>"#,
+                text_y - 1.0,
+                rain_weight,
+                rain_fill_color,
+                inches
+            ));
+            svg.push('\n');
+        }
+
+        let gust = day.wind_gust.unwrap_or(day.wind_speed);
+        let (gust_fill, gust_weight) = if gust >= GUST_ALERT_MPH {
+            ("red", "bold")
+        } else {
+            ("black", "normal")
+        };
+        svg.push_str(&format!(
+            r#"  <text x="780" y="{:.1}" text-anchor="end" font-family="Arial" font-size="16" font-weight="{}" fill="{}">{:.0} mph</text>"#,
+            text_y - 1.0,
+            gust_weight,
+            gust_fill,
+            gust
+        ));
+        svg.push('\n');
+
+        if i + 1 < days.len() {
+            svg.push_str(&format!(
+                r#"  <line x1="20" y1="{y:.1}" x2="780" y2="{y:.1}" stroke="black" stroke-width="1" stroke-dasharray="1,3"/>"#,
+                y = rows_top + row_h * (i as f32 + 1.0)
+            ));
+            svg.push('\n');
+        }
+    }
+
+    if let Some(alert) = alert {
+        let top = rows_bottom + 6.0;
+        svg.push_str(&format!(
+            r#"  <line x1="20" y1="{top}" x2="780" y2="{top}" stroke="black" stroke-width="2"/>"#
+        ));
+        svg.push('\n');
+        svg.push_str(&format!(
+            r#"  <text x="20" y="{:.1}" font-family="Arial" font-size="18" font-weight="bold" fill="red">{}</text>"#,
+            top + 22.0,
+            svg_common::escape_xml(&alert.event)
+        ));
+        svg.push('\n');
+        svg.push_str(&format!(
+            r#"  <text x="780" y="{:.1}" text-anchor="end" font-family="Arial" font-size="14" fill="black">{}</text>"#,
+            top + 22.0,
+            svg_common::escape_xml(&alert_time_range(alert, &tz).unwrap_or_default())
+        ));
+        svg.push('\n');
+
+        // Any other distinct alerts are named on a line of their own, taking
+        // the first line of the description's space.
+        let line_h = 17.0;
+        let mut first_y = top + 42.0;
+        if events.len() > 1 {
+            svg.push_str(&format!(
+                r#"  <text x="20" y="{:.1}" font-family="Arial" font-size="14" font-weight="bold" fill="red">{}</text>"#,
+                first_y,
+                svg_common::escape_xml(&event_list("Also: ", &events[1..], WEEK_ALERT_CHARS))
+            ));
+            svg.push('\n');
+            first_y += line_h;
+        }
+        let max_lines = ((452.0 - first_y) / line_h) as usize + 1;
+        let mut lines = alert_description_lines(&alert.description, WEEK_ALERT_CHARS);
+        if lines.len() > max_lines {
+            lines.truncate(max_lines);
+            if let Some(last) = lines.last_mut() {
+                let cut = truncate_chars(last, WEEK_ALERT_CHARS - 1);
+                *last = format!("{}…", cut.trim_end_matches(['.', '…', ' ']));
+            }
+        }
+        for (i, line) in lines.iter().enumerate() {
+            svg.push_str(&format!(
+                r#"  <text x="20" y="{:.1}" font-family="Arial" font-size="14" fill="black">{}</text>"#,
+                first_y + line_h * i as f32,
+                svg_common::escape_xml(line)
+            ));
+            svg.push('\n');
+        }
     }
 
     let footer_y = 470;
@@ -1197,8 +1480,8 @@ fn load_tricolor_icon_as_data_uri(icon_code: &str, size: u32) -> Result<String, 
     ))
 }
 
-/// Peak gust (mph) the tri-colour display flags in red.
-const MINI_GUST_ALERT_MPH: f32 = 30.0;
+/// Peak gust (mph) flagged in red, on the tri-colour display and the week page.
+const GUST_ALERT_MPH: f32 = 30.0;
 
 /// Peak UV index the tri-colour display flags in red: the "high" band, where
 /// sun protection is recommended.
@@ -1264,12 +1547,9 @@ fn abbreviate_alert(event: &str) -> String {
     }
 }
 
-/// One line naming the active alerts, most severe first, cut to `max_chars`.
-/// With several, a leading count — "(3) Wind Adv, Cold Wrn, …" — survives any
-/// cut, so nothing needs measuring. Duplicate events (the same alert issued by
-/// overlapping offices) count once. Names are shortened only when the full
-/// names don't fit.
-fn alert_line(alerts: &[WeatherAlert], max_chars: usize) -> String {
+/// The active alerts' event names, most severe first. Duplicate events (the
+/// same alert issued by overlapping offices) appear once; ties keep API order.
+fn distinct_alert_events(alerts: &[WeatherAlert]) -> Vec<&str> {
     let mut events: Vec<&str> = Vec::new();
     for alert in alerts {
         let event = alert.event.trim();
@@ -1277,18 +1557,31 @@ fn alert_line(alerts: &[WeatherAlert], max_chars: usize) -> String {
             events.push(event);
         }
     }
-    events.sort_by_key(|e| alert_severity_rank(e)); // stable: ties keep API order
+    events.sort_by_key(|e| alert_severity_rank(e)); // stable
+    events
+}
 
-    let prefix = match events.len() {
-        0 | 1 => String::new(),
-        n => format!("({n}) "),
-    };
+/// `prefix` then `events`, comma-separated and cut to `max_chars`. Names are
+/// shortened only when the full names don't fit.
+fn event_list(prefix: &str, events: &[&str], max_chars: usize) -> String {
     let full = format!("{prefix}{}", events.join(", "));
     if full.chars().count() <= max_chars {
         return full;
     }
     let short: Vec<String> = events.iter().map(|e| abbreviate_alert(e)).collect();
     truncate_chars(&format!("{prefix}{}", short.join(", ")), max_chars)
+}
+
+/// One line naming the active alerts, most severe first, cut to `max_chars`.
+/// With several, a leading count — "(3) Wind Adv, Cold Wrn, …" — survives any
+/// cut, so nothing needs measuring.
+fn alert_line(alerts: &[WeatherAlert], max_chars: usize) -> String {
+    let events = distinct_alert_events(alerts);
+    let prefix = match events.len() {
+        0 | 1 => String::new(),
+        n => format!("({n}) "),
+    };
+    event_list(&prefix, &events, max_chars)
 }
 
 /// Bold DejaVu Sans text for the tri-colour display. Below 12px the strokes
@@ -1421,7 +1714,7 @@ pub fn generate_weather_mini_svg(
     if !hours.is_empty() {
         let gust = hours.iter().map(|h| h.gust()).fold(0.0, f32::max);
         let uv = hours.iter().map(|h| h.uvi).fold(0.0, f32::max);
-        let gust_fill = if gust >= MINI_GUST_ALERT_MPH {
+        let gust_fill = if gust >= GUST_ALERT_MPH {
             "red"
         } else {
             "black"
@@ -1682,10 +1975,11 @@ pub fn generate_weather_mini_svg(
 #[cfg(test)]
 mod tests {
     use super::{
-        alert_line, display_icon_for_daily_weather, generate_weather_mini_svg, night_spans,
-        rain_fill, rain_window, short_hour, temperature_spark_range, truncate_chars,
-        CurrentWeather, DailyWeather, FeelsLike, HourlyPrecip, HourlyWeather, SparkFrame,
-        TempRange, Weather, WeatherAlert, WeatherData,
+        alert_description_lines, alert_line, display_icon_for_daily_weather,
+        generate_weather_mini_svg, generate_weather_week_svg, night_spans, rain_fill, rain_window,
+        short_hour, temperature_spark_range, truncate_chars, CurrentWeather, DailyWeather,
+        FeelsLike, HourlyPrecip, HourlyWeather, SparkFrame, TempRange, Weather, WeatherAlert,
+        WeatherData,
     };
     use reverse_geocoder::ReverseGeocoder;
 
@@ -1953,5 +2247,103 @@ mod tests {
         // pop >= cutoff, rain at/above 2.54mm cutoff → keep rain icon
         assert_eq!(display_icon_for_daily_weather("10d", 0.25, 2.54), "10d");
         assert_eq!(display_icon_for_daily_weather("01d", 0.10, 0.0), "01d");
+    }
+
+    #[test]
+    fn alert_description_keeps_nws_bullets_as_paragraphs() {
+        let text = "* WHAT...Sub-freezing temperatures as low as 26.\n\n* WHERE...Portions of the\nEast Bay valleys.";
+        assert_eq!(
+            alert_description_lines(text, 96),
+            [
+                "WHAT: Sub-freezing temperatures as low as 26.",
+                "WHERE: Portions of the East Bay valleys.",
+            ]
+        );
+        // Text without NWS bullets passes through, wrapped.
+        assert_eq!(
+            alert_description_lines("Strong winds expected... stay indoors.", 20),
+            ["Strong winds", "expected... stay", "indoors."]
+        );
+    }
+
+    #[test]
+    fn week_page_renders_with_and_without_alerts_and_air() {
+        use crate::air_quality::{AirForecast, AirSample, Components};
+        let geocoder = ReverseGeocoder::new();
+        let mut data = weather(vec![], vec![]);
+        data.daily = (0..8)
+            .map(|i| day(i, 40.0 + i as f32, 60.0 + i as f32))
+            .collect();
+
+        let svg = generate_weather_week_svg(&data, None, Some(80), &geocoder);
+        assert!(parses(&svg));
+        assert!(svg.contains("Air quality unavailable"));
+        assert_eq!(svg.matches("weekTempClip").count(), 16); // 8 bars, id + use
+
+        let air = AirForecast {
+            list: vec![
+                AirSample {
+                    dt: T0,
+                    components: Components {
+                        pm2_5: 5.0,
+                        pm10: 0.0,
+                        o3: 0.0,
+                    },
+                },
+                AirSample {
+                    dt: T0 + 30 * HOUR,
+                    components: Components {
+                        pm2_5: 20.0,
+                        pm10: 0.0,
+                        o3: 0.0,
+                    },
+                },
+            ],
+        };
+        data.alerts = vec![WeatherAlert {
+            event: "Frost Advisory".into(),
+            description: "* WHAT...Frost.\n\n* WHERE...Valleys.".into(),
+            start: T0,
+            end: T0 + 9 * HOUR,
+        }];
+        let svg = generate_weather_week_svg(&data, Some(&air), None, &geocoder);
+        assert!(parses(&svg));
+        assert!(svg.contains("AQI 28 · Good"));
+        assert!(svg.contains("peak 71 Moderate"));
+        assert!(svg.contains("Frost Advisory"));
+        assert!(svg.contains("WHERE: Valleys."));
+    }
+
+    #[test]
+    fn week_page_shows_the_worst_alert_and_names_the_rest_once() {
+        let geocoder = ReverseGeocoder::new();
+        let alert = |event: &str, description: &str| WeatherAlert {
+            event: event.into(),
+            description: description.into(),
+            start: T0,
+            end: T0 + 9 * HOUR,
+        };
+        let mut data = weather(
+            vec![],
+            vec![
+                alert("Wind Advisory", "Gusty."),
+                alert("Wind Advisory", "Gusty, from another office."),
+                alert("High Wind Warning", "Damaging winds."),
+                alert("Fire Weather Watch", "Dry."),
+            ],
+        );
+        data.daily = (0..8).map(|i| day(i, 40.0, 60.0)).collect();
+        let svg = generate_weather_week_svg(&data, None, None, &geocoder);
+        assert!(parses(&svg));
+        assert!(svg.contains(r#"fill="red">High Wind Warning</text>"#));
+        assert!(svg.contains("Damaging winds."));
+        assert!(svg.contains("Also: Fire Weather Watch, Wind Advisory</text>"));
+        assert!(!svg.contains("more"));
+
+        // A lone alert, even if duplicated, gets no "Also" line.
+        data.alerts.drain(2..);
+        let svg = generate_weather_week_svg(&data, None, None, &geocoder);
+        assert!(svg.contains(r#"fill="red">Wind Advisory</text>"#));
+        assert!(!svg.contains("Also:"));
     }
 }
